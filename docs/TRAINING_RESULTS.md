@@ -1,24 +1,30 @@
 # Training Results
 
-**Best Validation Loss:** 0.6246
-**Total Epochs Run:** 5
+**Best Validation Loss:** 0.0355
+**Total Epochs Run:** 9
 
 ## Per-Epoch Metrics
 
-| Epoch | Train Loss | Val Loss | Val Seq | Val Rule | Val Verify | Checkpoint Saved |
-|-------|-----------|----------|---------|----------|------------|-----------------|
-| 1 | 0.6725 | 0.6524 | 0.0070 | 0.6421 | 0.0034 | Yes |
-| 2 | 0.6403 | 0.6298 | 0.0036 | 0.6243 | 0.0020 | Yes |
-| 3 | 0.6538 | 0.6246 | 0.0022 | 0.6211 | 0.0013 | Yes |
-| 4 | 0.6380 | 0.6261 | 0.0016 | 0.6237 | 0.0008 | No |
-| 5 | 0.6341 | 0.6328 | 0.0011 | 0.6310 | 0.0007 | No |
+| Epoch | Train Loss | Val Loss | Val Seq Accuracy | Checkpoint Saved |
+|-------|-----------|----------|-------------------|-----------------|
+| 1 | 0.0955 | 0.0355 | 0.7459 | Yes |
+| 2 | 0.0362 | 0.0355 | 0.7459 | No |
+| 3 | 0.0354 | 0.0353 | 0.7459 | No |
+| 4 | 0.0352 | 0.0352 | 0.7459 | No |
+| 5 | 0.0353 | 0.0353 | 0.7459 | No |
+| 6 | 0.0351 | 0.0352 | 0.7459 | No |
+| 7 | 0.0350 | 0.0353 | 0.7459 | No |
+| 8 | 0.0349 | 0.0352 | 0.7459 | No |
+| 9 | 0.0347 | 0.0354 | 0.7459 | No |
 
 ## Configuration
 
+- **Architecture:** SimpleCalculusModel (standard nn.Transformer encoder-decoder)
 - **Learning Rate:** 0.0001
 - **Batch Size:** 32
-- **Hidden Dim:** 128
-- **Max Steps/Epoch:** 100
-- **Early Stopping:** patience=5, min_delta=0.001
-- **Vocab Size:** 100
-- **Num Rules:** 10
+- **Hidden Dim:** 256
+- **Max Steps/Epoch:** 3500
+- **Early Stopping:** patience=8, min_delta=0.0005
+- **Vocab Size:** 105
+- **Gradient Clipping:** max_norm=1.0
+- **Rule prediction:** folded into output sequence as leading RULE:xxx token (see docs/KNOWN_ISSUES.md)

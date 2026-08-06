@@ -22,6 +22,45 @@ SAFE_POS_EXPONENTS = [e for e in SAFE_EXPONENTS if e >= 1]
 # Variables
 VARIABLES = ["x", "y", "z"]
 
+# ── Rule IDs ─────────────────────────────────────────────────────────────────
+# IMPORTANT: these are NOT vocab token IDs. train.py's RuleHead classifier
+# output has one neuron per entry in RULE_LABELS, which is built by sorting
+# tokenizer/vocab.json's rule_tokens by vocab ID and taking each entry's
+# *list position* as the classifier's target index (see train.py's
+# flatten_vocab / RULE_LABELS construction). rule_ids written here must be
+# that 0-based classifier index, not the raw vocab ID, or CrossEntropyLoss
+# raises "IndexError: Target X is out of bounds."
+#
+# Current rule_tokens (sorted by vocab ID) and their resulting classifier index:
+#   RULE:power_rule (90)           -> index 0
+#   RULE:chain_rule (91)           -> index 1
+#   RULE:product_rule (92)         -> index 2
+#   RULE:quotient_rule (93)        -> index 3
+#   RULE:sum_rule (94)             -> index 4
+#   RULE:constant_rule (95)        -> index 5
+#   RULE:power_rule_integral (96)  -> index 6
+#   RULE:partial_derivative (97)   -> index 7
+#   RULE:lagrange_multiplier (98)  -> index 8
+#   RULE:integration_by_parts (99) -> index 9
+#   RULE:trig_rule (102)           -> index 10
+#   RULE:exp_rule (103)            -> index 11
+#   RULE:log_rule (104)            -> index 12
+#
+# 0 = power_rule, 4 = sum_rule, 5 = constant_rule, 7 = partial_derivative
+# (existing Phase 1 assignments -- these already happen to equal the correct
+# classifier index since vocab IDs 90-99 are consecutive, unchanged here).
+#
+# Phase 2 fix (see docs/KNOWN_ISSUES.md, "Rule head training plateau caused
+# by Phase 2 rule_id mislabeling"): sin/cos/tan/exp/ln previously all reused
+# rule_id 1 (chain_rule's index) as a placeholder, since no dedicated tokens
+# existed. tokenizer/vocab.json v1.4 added RULE:trig_rule, RULE:exp_rule,
+# and RULE:log_rule at vocab IDs 102-104, which sort to classifier indices
+# 10, 11, 12 respectively (NOT 102/103/104 -- that was a bug introduced in
+# the first pass of this fix; see docs/KNOWN_ISSUES.md).
+RULE_ID_TRIG = 10   # index of RULE:trig_rule -- sin, cos, tan
+RULE_ID_EXP = 11    # index of RULE:exp_rule -- exp
+RULE_ID_LOG = 12    # index of RULE:log_rule -- ln
+
 
 def _output_in_vocab(coeff, power):
     """Check that the derivative output (coeff*power, power-1) stays in vocab range."""
@@ -150,6 +189,13 @@ def generate_multivar_diff():
 # the model sees more than one exact pattern per function, per reviewer
 # feedback. Verified via exhaustive serialization test against the real
 # vocab: 0 failures across all 375,000 generated node instances.
+#
+# rule_id fix: previously all five functions returned rule_id 1 (chain_rule's
+# classifier index) as a placeholder because no dedicated tokens existed.
+# Now uses RULE_ID_TRIG / RULE_ID_EXP / RULE_ID_LOG -- the correct classifier
+# indices (10/11/12) for the new RULE:trig_rule/exp_rule/log_rule vocab
+# tokens (IDs 102/103/104) -- which stops ~25,000 semantically unrelated
+# rows from sharing one label. See docs/KNOWN_ISSUES.md.
 
 def generate_sin_diff(var="x"):
     """d/dvar[sin(k*var)] = k*cos(k*var)."""
@@ -159,7 +205,7 @@ def generate_sin_diff(var="x"):
     ans = {"op": "cos", "expr": inner}
     if k != 1:
         ans["coeff"] = k
-    return src, ans, 1  # rule_id 1 = chain_rule (closest existing label; see KNOWN_ISSUES.md note)
+    return src, ans, RULE_ID_TRIG
 
 
 def generate_cos_diff(var="x"):
@@ -170,7 +216,7 @@ def generate_cos_diff(var="x"):
     inner = {"numi": {"terms": [{"coeff": k, "var": {var: 1}}]}, "deno": 1}
     src = {"op": "cos", "expr": inner}
     ans = {"op": "sin", "expr": inner, "coeff": -k}
-    return src, ans, 1  # rule_id 1 = chain_rule (closest existing label; see KNOWN_ISSUES.md note)
+    return src, ans, RULE_ID_TRIG
 
 
 def generate_tan_diff(var="x"):
@@ -182,7 +228,7 @@ def generate_tan_diff(var="x"):
     ans = {"op": "sec", "expr": inner, "power": 2}
     if k != 1:
         ans["coeff"] = k
-    return src, ans, 1  # rule_id 1 = chain_rule (closest existing label; see KNOWN_ISSUES.md note)
+    return src, ans, RULE_ID_TRIG
 
 
 def generate_exp_diff(var="x"):
@@ -193,7 +239,7 @@ def generate_exp_diff(var="x"):
     ans = {"op": "exp", "expr": inner}
     if k != 1:
         ans["coeff"] = k
-    return src, ans, 1  # rule_id 1 = chain_rule (closest existing label; see KNOWN_ISSUES.md note)
+    return src, ans, RULE_ID_EXP
 
 
 def generate_ln_diff(var="x"):
@@ -205,7 +251,58 @@ def generate_ln_diff(var="x"):
     inner = {"numi": {"terms": [{"coeff": k, "var": {var: 1}}]}, "deno": 1}
     src = {"op": "ln", "expr": inner}
     ans = {"numi": {"terms": [{"coeff": 1}]}, "deno": {"terms": [{"coeff": 1, "var": {var: 1}}]}}
-    return src, ans, 1  # rule_id 1 = chain_rule (closest existing label; see KNOWN_ISSUES.md note)
+    return src, ans, RULE_ID_LOG
+
+
+# ── New addition: integrate templates ────────────────────────────────────────
+# eval/run_eval.py's benchmark set (eval/benchmarks/) includes an
+# "integrate" operation category, but the training data previously had NO
+# rows using op="integrate" at all -- only op="diff" was ever generated.
+# This guaranteed 0% accuracy on the "integrate" category regardless of
+# model quality, since the model had never seen a single example of it
+# during training. See docs/KNOWN_ISSUES.md.
+#
+# NOTE (gradient, tangent_line -- NOT included here): both were attempted
+# in an earlier pass and reverted.
+#   - gradient: inference/verifier.py's gradient_oracle() expects/returns a
+#     {var: expr} dict (e.g. {"x": <d/dx>, "y": <d/dy>}), but
+#     tokenizer/slang_serializer.py's serialize_slang_math() has no dispatch
+#     branch for a dict without "op"/"numi"+"deno"/"coeff" keys -- it would
+#     raise ValueError immediately on any {var: expr} row. Proper gradient
+#     support needs a new AST node type added to the serializer itself
+#     (e.g. a NODE:GRADIENT wrapper), which is a larger, separate change.
+#   - tangent_line: no OP:tangent_line vocab token existed until vocab.json
+#     v1.5. Even with that token, no oracle_fn branch exists in
+#     inference/verifier.py's verify() for op == "tangent_line", and the
+#     problem shape itself (a point (x0, y0) plus a linear-equation output)
+#     doesn't fit the existing {numi, deno} expression schema.
+# Both are flagged as separate follow-up work, not attempted in this pass.
+
+def generate_integrate_diff(var="x"):
+    """Generate a single-term power-rule integration problem (reverse power
+    rule): integral of coeff*var^power dvar = (coeff/(power+1))*var^(power+1).
+    Skips power == -1 (would require ln|x|, not supported -- consistent with
+    _integral_in_vocab's existing restriction)."""
+    for _ in range(100):
+        coeff = random.choice(SAFE_NONZERO_COEFFS)
+        power = random.choice(SAFE_EXPONENTS)
+        if power == -1:
+            continue
+        if _integral_in_vocab(coeff, power):
+            new_power = power + 1
+            new_coeff = int(coeff / new_power)
+            if power == 0:
+                src = {"numi": {"terms": [{"coeff": coeff}]}, "deno": 1}
+            else:
+                src = {"numi": {"terms": [{"coeff": coeff, "var": {var: power}}]}, "deno": 1}
+            ans = {"numi": {"terms": [{"coeff": new_coeff, "var": {var: new_power}}]}, "deno": 1}
+            return src, ans, 6  # rule_id 6 = power_rule_integral
+    # Fallback safe pair: integral of 4x^3 dx = x^4
+    return (
+        {"numi": {"terms": [{"coeff": 4, "var": {var: 3}}]}, "deno": 1},
+        {"numi": {"terms": [{"coeff": 1, "var": {var: 4}}]}, "deno": 1},
+        6,
+    )
 
 
 def generate_slang_dataset():
@@ -222,12 +319,13 @@ def generate_slang_dataset():
     # 10k constant terms
     # 10k negative exponent
     # 20k multi-variable partial derivatives
-    # 5k sin differentiation      (Phase 2, varied k)
-    # 5k cos differentiation      (Phase 2, varied k)
-    # 5k tan differentiation      (Phase 2, varied k)
-    # 5k exp differentiation      (Phase 2, varied k)
-    # 5k ln differentiation       (Phase 2, varied k)
-    # Total: 125k
+    # 5k sin differentiation      (Phase 2, varied k, rule index 10)
+    # 5k cos differentiation      (Phase 2, varied k, rule index 10)
+    # 5k tan differentiation      (Phase 2, varied k, rule index 10)
+    # 5k exp differentiation      (Phase 2, varied k, rule index 11)
+    # 5k ln differentiation       (Phase 2, varied k, rule index 12)
+    # 10k integrate (power rule integral, rule index 6)     -- new
+    # Total: 135k
 
     # 1. Single-term power rule (35k)
     for _ in range(35000):
@@ -293,7 +391,7 @@ def generate_slang_dataset():
             "verification_state": 1,
         })
 
-    # 6. Trig — sin (5k) — Phase 2 addition, varied k
+    # 6. Trig — sin (5k) — Phase 2 addition, varied k, rule index 10 (trig_rule)
     for _ in range(5000):
         var = random.choice(VARIABLES[:1])
         src, ans, rule_id = generate_sin_diff(var)
@@ -306,7 +404,7 @@ def generate_slang_dataset():
             "verification_state": 1,
         })
 
-    # 7. Trig — cos (5k) — Phase 2 addition, varied k
+    # 7. Trig — cos (5k) — Phase 2 addition, varied k, rule index 10 (trig_rule)
     for _ in range(5000):
         var = random.choice(VARIABLES[:1])
         src, ans, rule_id = generate_cos_diff(var)
@@ -319,7 +417,7 @@ def generate_slang_dataset():
             "verification_state": 1,
         })
 
-    # 8. Trig — tan (5k) — Phase 2 addition, varied k
+    # 8. Trig — tan (5k) — Phase 2 addition, varied k, rule index 10 (trig_rule)
     for _ in range(5000):
         var = random.choice(VARIABLES[:1])
         src, ans, rule_id = generate_tan_diff(var)
@@ -332,7 +430,7 @@ def generate_slang_dataset():
             "verification_state": 1,
         })
 
-    # 9. Exponential — exp (5k) — Phase 2 addition, varied k
+    # 9. Exponential — exp (5k) — Phase 2 addition, varied k, rule index 11 (exp_rule)
     for _ in range(5000):
         var = random.choice(VARIABLES[:1])
         src, ans, rule_id = generate_exp_diff(var)
@@ -345,11 +443,24 @@ def generate_slang_dataset():
             "verification_state": 1,
         })
 
-    # 10. Logarithmic — ln (5k) — Phase 2 addition, varied k
+    # 10. Logarithmic — ln (5k) — Phase 2 addition, varied k, rule index 12 (log_rule)
     for _ in range(5000):
         var = random.choice(VARIABLES[:1])
         src, ans, rule_id = generate_ln_diff(var)
         src_op = {"op": "diff", "var": var, "expr": src}
+        dataset.append({
+            "src_tokens": src_op,
+            "tgt_input_tokens": ans,
+            "tgt_output_tokens": ans,
+            "rule_ids": rule_id,
+            "verification_state": 1,
+        })
+
+    # 11. Integration — power rule integral (10k) — new addition, rule index 6
+    for _ in range(10000):
+        var = random.choice(VARIABLES[:1])
+        src, ans, rule_id = generate_integrate_diff(var)
+        src_op = {"op": "integrate", "var": var, "expr": src}
         dataset.append({
             "src_tokens": src_op,
             "tgt_input_tokens": ans,
