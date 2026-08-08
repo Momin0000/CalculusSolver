@@ -6,8 +6,7 @@
   "max_len": 32,
   "epochs": 15,
  "early_stopping": {
-  "patience": 8,
-  "min_delta": 0.0005
-},
+  "patience": 12,
+  "min_delta": 0.0002},
   "validation_logging": true
 }

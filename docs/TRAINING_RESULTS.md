@@ -1,21 +1,22 @@
 # Training Results
 
-**Best Validation Loss:** 0.0355
-**Total Epochs Run:** 9
+**Best Validation Loss:** 0.0317
+**Total Epochs Run:** 10
 
 ## Per-Epoch Metrics
 
 | Epoch | Train Loss | Val Loss | Val Seq Accuracy | Checkpoint Saved |
 |-------|-----------|----------|-------------------|-----------------|
-| 1 | 0.0955 | 0.0355 | 0.7459 | Yes |
-| 2 | 0.0362 | 0.0355 | 0.7459 | No |
-| 3 | 0.0354 | 0.0353 | 0.7459 | No |
-| 4 | 0.0352 | 0.0352 | 0.7459 | No |
-| 5 | 0.0353 | 0.0353 | 0.7459 | No |
-| 6 | 0.0351 | 0.0352 | 0.7459 | No |
-| 7 | 0.0350 | 0.0353 | 0.7459 | No |
-| 8 | 0.0349 | 0.0352 | 0.7459 | No |
-| 9 | 0.0347 | 0.0354 | 0.7459 | No |
+| 1 | 0.0981 | 0.0322 | 0.7711 | Yes |
+| 2 | 0.0330 | 0.0317 | 0.7730 | Yes |
+| 3 | 0.0323 | 0.0316 | 0.7730 | No |
+| 4 | 0.0324 | 0.0318 | 0.7705 | No |
+| 5 | 0.0324 | 0.0317 | 0.7730 | No |
+| 6 | 0.0317 | 0.0316 | 0.7730 | No |
+| 7 | 0.0323 | 0.0316 | 0.7730 | No |
+| 8 | 0.0318 | 0.0332 | 0.7676 | No |
+| 9 | 0.0320 | 0.0315 | 0.7730 | No |
+| 10 | 0.0318 | 0.0314 | 0.7730 | No |
 
 ## Configuration
 
@@ -25,6 +26,6 @@
 - **Hidden Dim:** 256
 - **Max Steps/Epoch:** 3500
 - **Early Stopping:** patience=8, min_delta=0.0005
-- **Vocab Size:** 105
+- **Vocab Size:** 106
 - **Gradient Clipping:** max_norm=1.0
 - **Rule prediction:** folded into output sequence as leading RULE:xxx token (see docs/KNOWN_ISSUES.md)
