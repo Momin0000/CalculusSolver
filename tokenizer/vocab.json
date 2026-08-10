@@ -37,7 +37,8 @@
         "OP:exp": 27,
         "OP:ln": 28,
         "OP:sec": 101,
-        "OP:tangent_line": 105
+        "OP:tangent_line": 105,
+        "OP:partial": 123
     },
     "opvar_tokens": {
         "OPVAR:x": 30,
