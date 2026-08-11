@@ -349,6 +349,88 @@ dataset rows and retraining.)
 
 To add a new entry, copy the template below and fill it in:
 
+## [RESOLVED] tokenizer/vocab.json missing OP:partial -- partial benchmark silently corrupted at inference
+
+**Discovered:** Cross-checking `problem_generator.py`'s dataset generation against `eval/generate_benchmarks.py`'s benchmark construction, while investigating why `partial` accuracy stayed low despite other operations improving
+**Fixed:** vocab.json v1.8
+**Severity:** High -- same class of bug as the STRUCT:OPEN issue above: silent data corruption, not a crash
+**Affected path:** Neural solver dataset generation, training, and inference only (FallbackSolver and GroqSolver unaffected -- they operate on raw SLaNg dicts, not the vocab)
+
+### What was wrong
+
+`eval/generate_benchmarks.py` has always constructed the `partial` benchmark
+category using:
+
+```python
+payload = {"op": "partial", "var": diff_var, "expr": expr}
+```
+
+But `problem_generator.py`'s call site for the 20,000 multivariable
+partial-derivative training examples emitted:
+
+```python
+src_op = {"op": "diff", "var": var, "expr": src_terms[0]}
+```
+
+Only `rule_ids` was tagged `partial_derivative` (rule_id 7) -- the `op`
+field itself was never `"partial"`. `tokenizer/vocab.json` had no
+`OP:partial` token at all in any version prior to v1.8.
+
+### Why it mattered
+
+Same mechanism as the `STRUCT:OPEN` issue: `inference/solve.py`'s
+`_serialize_input()` converts token strings to IDs via
+`self.vocab_map["token_to_id"].get(token, self.pad_id)`. Because
+`"OP:partial"` was never a valid vocab entry, every benchmark problem in the
+`partial` category had its operation identifier silently replaced with
+`[PAD]` before reaching the transformer encoder -- the model was being
+asked to solve a problem with no indication of which operation to perform.
+
+### The fix
+
+- `tokenizer/vocab.json`: added `"OP:partial": 123` to `operation_tokens`
+  (next free ID after `POINT:5` = 122, following the same non-renumbering
+  precedent as every prior fix in this file); version bumped to `1.8`.
+- `problem_generator.py`: changed the multivariable partial-derivative
+  dataset entry from `op: "diff"` to `op: "partial"`, matching what
+  `eval/generate_benchmarks.py` actually tests.
+- `inference/fallback_solver.py` already dispatches `op in ("diff",
+  "partial")` identically, so no solver changes were needed, and relabeling
+  is safe for verification purposes.
+- `data/slang_dataset.jsonl` and `data/splits/{train,val,test}.jsonl`
+  regenerated from the fixed generator so the fix actually takes effect --
+  the generator change alone does not retroactively patch already-generated
+  files.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `tokenizer/vocab.json` | Added `"OP:partial": 123` to `operation_tokens`; version bumped to `1.8` |
+| `problem_generator.py` | Changed multivariable partial-derivative dataset entry's `op` field from `"diff"` to `"partial"` |
+| `data/slang_dataset.jsonl`, `data/splits/{train,val,test}.jsonl` | Regenerated with the fix applied |
+| `docs/KNOWN_ISSUES.md` | This entry added |
+
+### Verification
+
+200 generated `op="partial"` examples were serialized with
+`tokenizer/slang_serializer.py` and checked against the vocab token map --
+zero missing tokens. The same 200 were solved with
+`inference/fallback_solver.py`'s `FallbackSolver` as a ground-truth check --
+200/200 solved without error. After regeneration, `data_validator.py`
+confirmed all three splits (139500/7750/7750 rows) pass schema and
+serializer round-trip validation, with 0 stale rows remaining and 18005
+rows correctly labeled `op=partial`.
+
+### Follow-up
+
+Per docs/ROOT_CAUSE_REPORT.md (PR #28), the current checkpoint
+(`checkpoints/final/best.pt`) does not converge regardless of this fix --
+this resolves a real data/schema bug but is not expected to move accuracy
+on its own until the convergence issue is separately addressed.
+
+---
+
 ```markdown
 ## [STATUS] Short description
 

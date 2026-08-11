@@ -362,10 +362,16 @@ def generate_slang_dataset():
             "verification_state": 1,
         })
 
-    # 5. Multi-variable partial derivatives (20k)
+   # 5. Multi-variable partial derivatives (20k)
+    # NOTE (vocab.json v1.8 / docs/KNOWN_ISSUES.md): this used to emit
+    # op="diff" here, but eval/generate_benchmarks.py's partial benchmark set
+    # has always used op="partial". No OP:partial vocab token existed at all,
+    # so every partial benchmark problem was silently corrupted to [PAD] at
+    # inference. Now that OP:partial exists in vocab.json, this must emit the
+    # matching op string or the mismatch is reintroduced.
     for _ in range(20000):
         src_terms, ans_terms, var, rule_id = generate_multivar_diff()
-        src_op = {"op": "diff", "var": var, "expr": src_terms[0]}
+        src_op = {"op": "partial", "var": var, "expr": src_terms[0]}
         dataset.append({
             "src_tokens": src_op,
             "tgt_input_tokens": ans_terms[0] if ans_terms else {"numi": {"terms": [{"coeff": 0}]}, "deno": 1},
