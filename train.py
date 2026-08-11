@@ -1,9 +1,11 @@
 import sys
 import os
 import json
+import subprocess
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
+from torch.optim.lr_scheduler import LambdaLR
 from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
@@ -13,6 +15,15 @@ from model.simple_transformer import SimpleCalculusModel
 
 with open("config.json", "r") as cfg_file:
     config = json.load(cfg_file)
+
+
+def get_git_commit_hash():
+    """Returns the exact current git commit hash for provenance tracking."""
+    try:
+        hash_str = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
+        return hash_str
+    except Exception:
+        return "UNKNOWN_COMMIT"
 
 
 def flatten_vocab(raw_vocab):
@@ -32,10 +43,6 @@ vocab_mapping = flatten_vocab(_raw_vocab)
 REAL_VOCAB_SIZE = max(vocab_mapping.values()) + 1
 
 # Rule labels/tokens, derived from vocab's rule_tokens, ordered by ID.
-# Used only to translate a dataset row's existing rule_ids INDEX (0-12)
-# back into its real RULE:xxx vocab token string, so it can be prepended
-# to the target sequence. problem_generator.py / rule_ids format is
-# unchanged -- this translation happens here in train.py only.
 _rule_items = sorted(_raw_vocab.get("rule_tokens", {}).items(), key=lambda kv: kv[1])
 RULE_TOKEN_STRINGS = [name for name, _ in _rule_items]  # e.g. "RULE:power_rule"
 
@@ -81,10 +88,6 @@ class SlangDatasetLoader(Dataset):
     def __getitem__(self, idx):
         item = self.data[idx]
 
-        # Translate this row's rule_ids index into its real RULE:xxx token
-        # string, so it becomes part of the sequence the decoder learns to
-        # generate (as the very first token after [BOS]), instead of a
-        # separate classifier target.
         rule_idx = item["rule_ids"]
         rule_token = (
             RULE_TOKEN_STRINGS[rule_idx]
@@ -112,15 +115,14 @@ def evaluate_validation(model, val_loader, criterion):
     model.eval()
     total_loss = 0.0
     total_correct_seq = 0
+    total_correct_tokens = 0
+    total_valid_tokens = 0
     total_seq = 0
     steps = 0
+
     with torch.no_grad():
         for batch in val_loader:
             src_seq = batch["src_seq"]
-            # Standard teacher-forced shift: tgt_in_seq is tgt_out_seq minus
-            # the last token; loss is computed against tgt_out_seq minus the
-            # first token ([BOS]). Both already have [BOS]/[EOS] baked in
-            # from _tokenize's add_boundaries=True.
             tgt_in = batch["tgt_in_seq"][:, :-1]
             tgt_out = batch["tgt_out_seq"][:, 1:]
 
@@ -132,52 +134,71 @@ def evaluate_validation(model, val_loader, criterion):
 
             preds = logits.argmax(dim=-1)
             mask = tgt_out != PAD_ID
-            correct = ((preds == tgt_out) | ~mask).all(dim=1)
-            total_correct_seq += correct.sum().item()
+
+            # Per-token accuracy logic
+            correct_token_mask = (preds == tgt_out) & mask
+            total_correct_tokens += correct_token_mask.sum().item()
+            total_valid_tokens += mask.sum().item()
+
+            # Exact sequence match logic
+            correct_seq = ((preds == tgt_out) | ~mask).all(dim=1)
+            total_correct_seq += correct_seq.sum().item()
             total_seq += tgt_out.size(0)
             steps += 1
 
     if steps == 0:
-        return 0.0, 0.0
-    return total_loss / steps, total_correct_seq / max(total_seq, 1)
+        return 0.0, 0.0, 0.0
+
+    avg_loss = total_loss / steps
+    seq_acc = total_correct_seq / max(total_seq, 1)
+    token_acc = (
+        total_correct_tokens / max(total_valid_tokens, 1)
+        if total_valid_tokens > 0
+        else 0.0
+    )
+
+    return avg_loss, seq_acc, token_acc
 
 
-def write_training_results(metrics_log, best_val_loss):
+def write_training_results(metrics_log, best_val_loss, git_commit_hash):
     docs_dir = Path("docs")
     docs_dir.mkdir(exist_ok=True)
 
     lines = [
         "# Training Results",
         "",
+        f"**Git Commit Hash:** `{git_commit_hash}`",
         f"**Best Validation Loss:** {best_val_loss:.4f}" if best_val_loss < float("inf") else "**Best Validation Loss:** N/A",
         f"**Total Epochs Run:** {len(metrics_log)}",
         "",
         "## Per-Epoch Metrics",
         "",
-        "| Epoch | Train Loss | Val Loss | Val Seq Accuracy | Checkpoint Saved |",
-        "|-------|-----------|----------|-------------------|-----------------|",
+        "| Epoch | Train Loss | Val Loss | Per-Token Acc | Val Seq Acc | Saved |",
+        "|-------|-----------|----------|---------------|-------------|-------|",
     ]
     for m in metrics_log:
         val_loss = f"{m['val_loss']:.4f}" if m['val_loss'] is not None else "N/A"
+        token_acc = f"{m['val_token_acc']:.4f}" if m['val_token_acc'] is not None else "N/A"
         val_acc = f"{m['val_seq_acc']:.4f}" if m['val_seq_acc'] is not None else "N/A"
         saved = "Yes" if m['saved'] else "No"
         lines.append(
-            f"| {m['epoch']} | {m['train_loss']:.4f} | {val_loss} | {val_acc} | {saved} |"
+            f"| {m['epoch']} | {m['train_loss']:.4f} | {val_loss} | {token_acc} | {val_acc} | {saved} |"
         )
 
     lines.extend([
         "",
-        "## Configuration",
+        "## Configuration Snapshot",
         "",
         f"- **Architecture:** SimpleCalculusModel (standard nn.Transformer encoder-decoder)",
         f"- **Learning Rate:** {config.get('learning_rate')}",
+        f"- **Warmup Steps:** {config.get('warmup_steps', 1000)}",
         f"- **Batch Size:** {config.get('batch_size')}",
         f"- **Hidden Dim:** {config.get('hidden_dim')}",
         f"- **Max Steps/Epoch:** {config.get('max_steps')}",
         f"- **Early Stopping:** patience={config.get('early_stopping', {}).get('patience', 'N/A')}, min_delta={config.get('early_stopping', {}).get('min_delta', 'N/A')}",
         f"- **Vocab Size:** {REAL_VOCAB_SIZE}",
         f"- **Gradient Clipping:** max_norm={config.get('grad_clip_max_norm', 1.0)}",
-        f"- **Rule prediction:** folded into output sequence as leading RULE:xxx token (see docs/KNOWN_ISSUES.md)",
+        f"- **Rule Prediction:** Folded into output sequence as leading RULE:xxx token",
         "",
     ])
 
@@ -187,11 +208,12 @@ def write_training_results(metrics_log, best_val_loss):
 
 
 def run_training_pipeline():
-    print(f"--- Training SimpleCalculusModel (vocab size: {REAL_VOCAB_SIZE}) ---")
+    commit_hash = get_git_commit_hash()
+    print(f"--- Training SimpleCalculusModel (commit: {commit_hash}, vocab: {REAL_VOCAB_SIZE}) ---")
 
     train_file = Path("data/splits/train.jsonl")
     if not train_file.exists():
-        print("Train split missing!")
+        print("CRITICAL: Train split missing! Run problem_generator.py first.")
         sys.exit(1)
 
     train_loader = DataLoader(SlangDatasetLoader(train_file), batch_size=config["batch_size"], shuffle=True)
@@ -207,9 +229,20 @@ def run_training_pipeline():
         pad_id=PAD_ID,
         max_len=MAX_LEN,
     )
-    optimizer = torch.optim.Adam(model.parameters(), lr=config["learning_rate"])
-    grad_clip_max_norm = config.get("grad_clip_max_norm", 1.0)
 
+    base_lr = config["learning_rate"]
+    optimizer = torch.optim.Adam(model.parameters(), lr=base_lr)
+
+    # Linear Warmup Scheduler setup
+    warmup_steps = config.get("warmup_steps", 1000)
+    def lr_lambda(current_step):
+        if current_step < warmup_steps:
+            return float(current_step) / float(max(1, warmup_steps))
+        return 1.0
+
+    scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+    grad_clip_max_norm = config.get("grad_clip_max_norm", 1.0)
     criterion = nn.CrossEntropyLoss(ignore_index=PAD_ID)
 
     best_val_loss = float("inf")
@@ -233,17 +266,7 @@ def run_training_pipeline():
         use_early_stopping = False
 
     epochs = config.get("epochs", 1)
-
-    if FINAL_CHECKPOINT_PATH.exists():
-        try:
-            model.load_state_dict(torch.load(str(FINAL_CHECKPOINT_PATH), map_location="cpu"))
-            print(f"Loaded existing checkpoint from {FINAL_CHECKPOINT_PATH} to resume training.")
-            if val_loader is not None:
-                val_loss, val_acc = evaluate_validation(model, val_loader, criterion)
-                best_val_loss = val_loss
-                print(f"Initial val loss from resumed checkpoint: {best_val_loss:.4f}")
-        except Exception as e:
-            print(f"Could not load checkpoint to resume: {e}")
+    global_step = 0
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -262,29 +285,38 @@ def run_training_pipeline():
             logits = model(src_seq, tgt_in)
             loss = criterion(logits.reshape(-1, REAL_VOCAB_SIZE), tgt_out.reshape(-1))
             loss.backward()
+
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_max_norm)
             optimizer.step()
+            scheduler.step()
 
+            global_step += 1
             epoch_loss += loss.item()
             steps_run += 1
 
         avg_train_loss = epoch_loss / max(steps_run, 1)
-        print(f"Epoch {epoch}/{epochs} - Train Loss: {avg_train_loss:.4f}")
+        current_lr = scheduler.get_last_lr()[0]
+        print(f"Epoch {epoch}/{epochs} - Train Loss: {avg_train_loss:.4f} (LR: {current_lr:.6f})")
 
         epoch_metrics = {
             "epoch": epoch,
             "train_loss": avg_train_loss,
             "val_loss": None,
+            "val_token_acc": None,
             "val_seq_acc": None,
             "saved": False,
         }
 
         if val_loader is not None:
-            val_loss, val_acc = evaluate_validation(model, val_loader, criterion)
-            print(f"Epoch {epoch} - Val Loss: {val_loss:.4f}  Val Seq Accuracy: {val_acc:.4f}")
+            val_loss, val_seq_acc, val_token_acc = evaluate_validation(model, val_loader, criterion)
+            print(
+                f"Epoch {epoch} - Val Loss: {val_loss:.4f} | "
+                f"Token Acc: {val_token_acc:.4f} | Seq Acc: {val_seq_acc:.4f}"
+            )
 
             epoch_metrics["val_loss"] = val_loss
-            epoch_metrics["val_seq_acc"] = val_acc
+            epoch_metrics["val_token_acc"] = val_token_acc
+            epoch_metrics["val_seq_acc"] = val_seq_acc
 
             if val_loss < best_val_loss - (min_delta if use_early_stopping else 0):
                 best_val_loss = val_loss
@@ -295,7 +327,7 @@ def run_training_pipeline():
                 epoch_metrics["saved"] = True
             else:
                 patience_counter += 1
-                print(f"  Epoch {epoch}: val loss {val_loss:.4f} did not improve from {best_val_loss:.4f}, skipping checkpoint save.")
+                print(f"  Epoch {epoch}: val loss {val_loss:.4f} did not improve from {best_val_loss:.4f}.")
                 if use_early_stopping and patience_counter >= patience:
                     print("Early stopping triggered. Training stopped.")
                     metrics_log.append(epoch_metrics)
@@ -308,7 +340,7 @@ def run_training_pipeline():
 
         metrics_log.append(epoch_metrics)
 
-    write_training_results(metrics_log, best_val_loss)
+    write_training_results(metrics_log, best_val_loss, commit_hash)
     print("--- Training complete ---")
 
 
