@@ -1,28 +1,36 @@
-import json
-import os
+"""
+numpy/onnxruntime-only mirror of inference/beam_search.py -- mirrors that
+file's beam_search() line-for-line in logic, but never imports torch.
+This is the entire point of the Option A (ONNX) deployment path: the
+production Vercel bundle only needs onnxruntime + numpy, not the full
+PyTorch package, which is what pushed the old bundle over the ~250MB
+serverless size limit.
+"""
+
 from typing import Any, Dict, List, Optional
 
-import torch
+import numpy as np
+import onnxruntime as ort
 
-from inference.grammar import NodeValidityPool, flatten_vocab, load_vocab, is_valid_prefix
-
-# NOTE: NodeValidityPool, flatten_vocab, load_vocab, and is_valid_prefix now
-# live in inference/grammar.py (torch-free) so the ONNX deployment path
-# (deployment/onnx_beam_search.py) can reuse them without importing torch.
-# This is a pure move -- no logic changed from the previous inline versions.
+from inference.grammar import NodeValidityPool
 
 
-def beam_search(
-    model,
-    src_tokens: torch.Tensor,
+def _softmax(x: np.ndarray) -> np.ndarray:
+    x = x - np.max(x)
+    e = np.exp(x)
+    return e / e.sum()
+
+
+def onnx_beam_search(
+    session: ort.InferenceSession,
+    src_tokens: List[int],
     vocab_map: Dict[str, Any],
     beam_size: int = 5,
     max_len: int = 32,
     node_pool: Optional[NodeValidityPool] = None,
 ) -> Dict[str, Any]:
-    """Simplified beam search for SimpleCalculusModel -- one model call
-    per step (src_seq, tgt_in_seq), no rule_embeddings, no tree kwargs."""
-    device = src_tokens.device
+    """Mirrors inference/beam_search.py::beam_search(), but calls the
+    exported ONNX graph via onnxruntime instead of a torch.nn.Module."""
     vocab = vocab_map["token_to_id"]
     id_to_token = vocab_map["id_to_token"]
     bos_id = vocab["[BOS]"]
@@ -33,6 +41,8 @@ def beam_search(
 
     vocab_size = max(id_to_token.keys()) + 1
     all_candidate_tokens = [id_to_token.get(idx, "[PAD]") for idx in range(vocab_size)]
+
+    src_arr = np.array([src_tokens], dtype=np.int64)
 
     beams = [{"tokens": [bos_id], "score": 0.0, "finished": False}]
     completed = []
@@ -52,25 +62,33 @@ def beam_search(
                 else token_strings
             )
 
-            tgt = torch.tensor([current_tokens], device=device)
-            logits = model(src_tokens, tgt)
+            tgt_arr = np.array([current_tokens], dtype=np.int64)
+            logits = session.run(
+                ["logits"],
+                {"src_seq": src_arr, "tgt_in_seq": tgt_arr},
+            )[0]
             next_logits = logits[0, -1, :]
 
             mask = node_pool.mask(validity_tokens, all_candidate_tokens)
-            invalid_mask = torch.tensor([not v for v in mask], device=device)
-            safe_logits = next_logits.masked_fill(invalid_mask, float("-inf"))
+            safe_logits = next_logits.copy()
+            safe_logits[[not v for v in mask]] = -np.inf
 
-            if torch.isinf(safe_logits).all():
+            if np.all(np.isinf(safe_logits)):
                 continue
 
-            log_probs = torch.log_softmax(safe_logits, dim=-1)
-            topk = torch.topk(log_probs, min(beam_size, safe_logits.size(0)))
-            for score, token_id in zip(topk.values.tolist(), topk.indices.tolist()):
-                new_tokens = current_tokens + [int(token_id)]
+            log_probs = np.log(_softmax(safe_logits) + 1e-12)
+            k = min(beam_size, safe_logits.shape[0])
+            top_idx = np.argpartition(-log_probs, k - 1)[:k]
+            top_idx = top_idx[np.argsort(-log_probs[top_idx])]
+
+            for token_id in top_idx:
+                token_id = int(token_id)
+                score = float(log_probs[token_id])
+                new_tokens = current_tokens + [token_id]
                 finished = token_id == eos_id
                 candidates.append({
                     "tokens": new_tokens,
-                    "score": beam["score"] + float(score),
+                    "score": beam["score"] + score,
                     "finished": finished,
                 })
 

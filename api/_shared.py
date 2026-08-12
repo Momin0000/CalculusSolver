@@ -164,7 +164,32 @@ def get_solver():
             _solver_error = str(exc)
             print(f"[CalculusSolver] Neural proxy init failed: {exc}", flush=True)
 
-    # 2. Second priority: Local neural solver (resolve checkpoint path first)
+    # 2. Second priority: Local ONNX solver (lightweight — no torch import,
+    #    fits Vercel's ~250MB serverless size limit). See docs/EXPORT_DECISION.md
+    #    for the measured size/correctness verification for this artifact.
+    #    Must be tried before the local torch load below, since that path
+    #    requires bundling the full PyTorch package.
+    onnx_path = os.environ.get(
+        "ONNX_MODEL_PATH", str(ROOT / "deployment" / "artifacts" / "best.onnx")
+    )
+    if os.path.exists(onnx_path):
+        try:
+            from deployment.onnx_solve import ONNXCalculusSolverInference
+            _solver = ONNXCalculusSolverInference(model_path=onnx_path)
+            _solver_mode = "neural-onnx"
+            _solver_error = None
+            print(
+                f"[CalculusSolver] ONNX neural model loaded from '{onnx_path}'",
+                flush=True,
+            )
+            return _solver, _solver_mode
+        except Exception as exc:
+            _solver_error = str(exc)
+            print(f"[CalculusSolver] ONNX load failed: {exc}", flush=True)
+
+    # 3. Third priority: Local torch-based neural solver (resolve checkpoint path first).
+    #    Heavier than the ONNX path above -- only reached if no best.onnx is present
+    #    or it failed to load.
     model_path, stage = _resolve_model_path()
     if model_path is not None:
         try:
@@ -184,7 +209,7 @@ def get_solver():
                 flush=True,
             )
 
-    # 3. Third priority: Try to load GroqSolver (Fallback intelligent model)
+    # 4. Fourth priority: Try to load GroqSolver (Fallback intelligent model)
     api_key = os.environ.get("GROQ_API_KEY")
     if api_key:
         try:
@@ -202,7 +227,7 @@ def get_solver():
             _solver_error = str(exc)
             print(f"[CalculusSolver] Groq load failed: {exc}", flush=True)
 
-    # 4. Final priority: Fallback
+    # 5. Final priority: Fallback
     from inference.fallback_solver import FallbackSolver
     _solver = FallbackSolver()
     _solver_mode = "fallback"
@@ -311,4 +336,3 @@ def normalize_solver_result(result: dict, mode: str) -> dict:
     else:
         # Fallback and Groq solver results already have the correct structure
         return {**result, "mode": mode}
-
