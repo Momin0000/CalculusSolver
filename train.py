@@ -9,13 +9,20 @@ from pathlib import Path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from tokenizer.slang_serializer import serialize_slang_math
-from model.simple_transformer import SimpleCalculusModel
+from solver_model import CalculusSolverModel
+from checkpoint_provenance import stamp_and_record
 
 with open("config.json", "r") as cfg_file:
     config = json.load(cfg_file)
 
 
 def flatten_vocab(raw_vocab):
+    """
+    Same flattening rule as inference/beam_search.flatten_vocab on org main:
+    merge every sub-dict, skip keys starting with '_' (e.g. _comment, _version).
+    Keeping this identical to beam_search's version on purpose, so training-time
+    token IDs and inference-time token IDs can never drift apart again.
+    """
     flat = {}
     for key, value in raw_vocab.items():
         if key.startswith("_"):
@@ -29,18 +36,16 @@ with open("tokenizer/vocab.json", "r", encoding="utf-8") as f:
     _raw_vocab = json.load(f)
 
 vocab_mapping = flatten_vocab(_raw_vocab)
+
+# IDs are NOT contiguous (gaps by design — see docs/KNOWN_ISSUES.md, STRUCT:OPEN @ 23).
+# len(vocab_mapping) undercounts; embedding table must cover the highest real ID.
 REAL_VOCAB_SIZE = max(vocab_mapping.values()) + 1
 
-# Rule labels/tokens, derived from vocab's rule_tokens, ordered by ID.
-# Used only to translate a dataset row's existing rule_ids INDEX (0-12)
-# back into its real RULE:xxx vocab token string, so it can be prepended
-# to the target sequence. problem_generator.py / rule_ids format is
-# unchanged -- this translation happens here in train.py only.
+# Rule labels for RuleHead, derived from vocab's rule_tokens, ordered by ID.
 _rule_items = sorted(_raw_vocab.get("rule_tokens", {}).items(), key=lambda kv: kv[1])
-RULE_TOKEN_STRINGS = [name for name, _ in _rule_items]  # e.g. "RULE:power_rule"
+RULE_LABELS = [name.split("RULE:", 1)[1] for name, _ in _rule_items]
 
 MAX_LEN = config.get("max_len", 32)
-PAD_ID = vocab_mapping["[PAD]"]
 
 CHECKPOINT_DIR = Path("checkpoints/final")
 FINAL_CHECKPOINT_PATH = CHECKPOINT_DIR / "best.pt"
@@ -57,10 +62,9 @@ class SlangDatasetLoader(Dataset):
     def __len__(self):
         return len(self.data)
 
-    def _tokenize(self, envelope, extra_prefix_tokens=None, add_boundaries=False):
+    def _tokenize(self, envelope, add_boundaries=False):
+        # serialize_slang_math returns a single List[str] — no parent/child tuple.
         tokens = serialize_slang_math(envelope)
-        if extra_prefix_tokens:
-            tokens = list(extra_prefix_tokens) + tokens
         if add_boundaries:
             tokens = ["[BOS]"] + tokens + ["[EOS]"]
 
@@ -80,69 +84,64 @@ class SlangDatasetLoader(Dataset):
 
     def __getitem__(self, idx):
         item = self.data[idx]
-
-        # Translate this row's rule_ids index into its real RULE:xxx token
-        # string, so it becomes part of the sequence the decoder learns to
-        # generate (as the very first token after [BOS]), instead of a
-        # separate classifier target.
-        rule_idx = item["rule_ids"]
-        rule_token = (
-            RULE_TOKEN_STRINGS[rule_idx]
-            if 0 <= rule_idx < len(RULE_TOKEN_STRINGS)
-            else None
-        )
-        prefix = [rule_token] if rule_token else []
-
         src_ids = self._tokenize(item["src_tokens"], add_boundaries=False)
-        tgt_in_ids = self._tokenize(
-            item["tgt_input_tokens"], extra_prefix_tokens=prefix, add_boundaries=True
-        )
-        tgt_out_ids = self._tokenize(
-            item["tgt_output_tokens"], extra_prefix_tokens=prefix, add_boundaries=True
-        )
+        tgt_in_ids = self._tokenize(item["tgt_input_tokens"], add_boundaries=True)
+        tgt_out_ids = self._tokenize(item["tgt_output_tokens"], add_boundaries=True)
         return {
             "src_seq": src_ids,
             "tgt_in_seq": tgt_in_ids,
             "tgt_out_seq": tgt_out_ids,
+            "rule_id": torch.tensor(item["rule_ids"], dtype=torch.long),
             "v_state": torch.tensor(item["verification_state"], dtype=torch.float),
         }
 
 
-def evaluate_validation(model, val_loader, criterion):
+def evaluate_validation(model, val_loader, criterion_sequence, criterion_rule, criterion_verify):
     model.eval()
-    total_loss = 0.0
-    total_correct_seq = 0
-    total_seq = 0
+    total_val_loss = 0.0
+    total_seq_loss = 0.0
+    total_rule_loss = 0.0
+    total_verify_loss = 0.0
     steps = 0
     with torch.no_grad():
         for batch in val_loader:
-            src_seq = batch["src_seq"]
-            # Standard teacher-forced shift: tgt_in_seq is tgt_out_seq minus
-            # the last token; loss is computed against tgt_out_seq minus the
-            # first token ([BOS]). Both already have [BOS]/[EOS] baked in
-            # from _tokenize's add_boundaries=True.
-            tgt_in = batch["tgt_in_seq"][:, :-1]
-            tgt_out = batch["tgt_out_seq"][:, 1:]
-
-            logits = model(src_seq, tgt_in)
-            loss = criterion(
-                logits.reshape(-1, REAL_VOCAB_SIZE), tgt_out.reshape(-1)
+            batch_size, seq_len = batch["src_seq"].shape
+            decoder_logits, rule_logits, verifier_logits = model(
+                batch["src_seq"],
+                batch["tgt_in_seq"],
             )
-            total_loss += loss.item()
 
-            preds = logits.argmax(dim=-1)
-            mask = tgt_out != PAD_ID
-            correct = ((preds == tgt_out) | ~mask).all(dim=1)
-            total_correct_seq += correct.sum().item()
-            total_seq += tgt_out.size(0)
+            raw_loss_seq = criterion_sequence(
+                decoder_logits.reshape(-1, REAL_VOCAB_SIZE), batch["tgt_out_seq"].reshape(-1)
+            )
+            raw_loss_seq = raw_loss_seq.view(batch_size, -1).mean(dim=-1)
+
+            mask = (batch["v_state"] == 1.0).float()
+            loss_seq = (raw_loss_seq * mask).sum() / (mask.sum() + 1e-8)
+
+            loss_rule = criterion_rule(rule_logits, batch["rule_id"])
+            loss_verify = criterion_verify(verifier_logits.squeeze(-1), batch["v_state"])
+
+            total_loss = loss_seq + loss_rule + loss_verify
+            
+            total_val_loss += total_loss.item()
+            total_seq_loss += loss_seq.item()
+            total_rule_loss += loss_rule.item()
+            total_verify_loss += loss_verify.item()
             steps += 1
-
+            
     if steps == 0:
-        return 0.0, 0.0
-    return total_loss / steps, total_correct_seq / max(total_seq, 1)
+        return 0.0, 0.0, 0.0, 0.0
+    return (
+        total_val_loss / steps,
+        total_seq_loss / steps,
+        total_rule_loss / steps,
+        total_verify_loss / steps,
+    )
 
 
 def write_training_results(metrics_log, best_val_loss):
+    """Write per-epoch metrics to docs/TRAINING_RESULTS.md."""
     docs_dir = Path("docs")
     docs_dir.mkdir(exist_ok=True)
 
@@ -154,68 +153,77 @@ def write_training_results(metrics_log, best_val_loss):
         "",
         "## Per-Epoch Metrics",
         "",
-        "| Epoch | Train Loss | Val Loss | Val Seq Accuracy | Checkpoint Saved |",
-        "|-------|-----------|----------|-------------------|-----------------|",
+        "| Epoch | Train Loss | Val Loss | Val Seq | Val Rule | Val Verify | Checkpoint Saved |",
+        "|-------|-----------|----------|---------|----------|------------|-----------------|",
     ]
     for m in metrics_log:
         val_loss = f"{m['val_loss']:.4f}" if m['val_loss'] is not None else "N/A"
-        val_acc = f"{m['val_seq_acc']:.4f}" if m['val_seq_acc'] is not None else "N/A"
+        val_seq = f"{m['val_seq']:.4f}" if m['val_seq'] is not None else "N/A"
+        val_rule = f"{m['val_rule']:.4f}" if m['val_rule'] is not None else "N/A"
+        val_verify = f"{m['val_verify']:.4f}" if m['val_verify'] is not None else "N/A"
         saved = "Yes" if m['saved'] else "No"
         lines.append(
-            f"| {m['epoch']} | {m['train_loss']:.4f} | {val_loss} | {val_acc} | {saved} |"
+            f"| {m['epoch']} | {m['train_loss']:.4f} | {val_loss} | {val_seq} | {val_rule} | {val_verify} | {saved} |"
         )
 
     lines.extend([
         "",
         "## Configuration",
         "",
-        f"- **Architecture:** SimpleCalculusModel (standard nn.Transformer encoder-decoder)",
         f"- **Learning Rate:** {config.get('learning_rate')}",
         f"- **Batch Size:** {config.get('batch_size')}",
         f"- **Hidden Dim:** {config.get('hidden_dim')}",
         f"- **Max Steps/Epoch:** {config.get('max_steps')}",
         f"- **Early Stopping:** patience={config.get('early_stopping', {}).get('patience', 'N/A')}, min_delta={config.get('early_stopping', {}).get('min_delta', 'N/A')}",
         f"- **Vocab Size:** {REAL_VOCAB_SIZE}",
-        f"- **Gradient Clipping:** max_norm={config.get('grad_clip_max_norm', 1.0)}",
-        f"- **Rule prediction:** folded into output sequence as leading RULE:xxx token (see docs/KNOWN_ISSUES.md)",
+        f"- **Num Rules:** {len(RULE_LABELS)}",
         "",
     ])
 
     with open(docs_dir / "TRAINING_RESULTS.md", "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-    print("Training results written to docs/TRAINING_RESULTS.md")
+    print(f"Training results written to docs/TRAINING_RESULTS.md")
 
 
 def run_training_pipeline():
-    print(f"--- Training SimpleCalculusModel (vocab size: {REAL_VOCAB_SIZE}) ---")
+    print(f"--- Training (vocab size: {REAL_VOCAB_SIZE}, {len(RULE_LABELS)} rules) ---", flush=True)
 
     train_file = Path("data/splits/train.jsonl")
     if not train_file.exists():
-        print("Train split missing!")
+        print("Train split missing!", flush=True)
         sys.exit(1)
 
-    train_loader = DataLoader(SlangDatasetLoader(train_file), batch_size=config["batch_size"], shuffle=True)
+    print("[DEBUG] Loading train dataset into memory...", flush=True)
+    train_dataset = SlangDatasetLoader(train_file)
+    print(f"[DEBUG] Train dataset loaded: {len(train_dataset)} examples", flush=True)
+    train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True)
 
     val_file = Path("data/splits/val.jsonl")
     val_loader = None
     if val_file.exists() and config.get("validation_logging", True):
-        val_loader = DataLoader(SlangDatasetLoader(val_file), batch_size=config["batch_size"], shuffle=False)
+        print("[DEBUG] Loading val dataset into memory...", flush=True)
+        val_dataset = SlangDatasetLoader(val_file)
+        print(f"[DEBUG] Val dataset loaded: {len(val_dataset)} examples", flush=True)
+        val_loader = DataLoader(val_dataset, batch_size=config["batch_size"], shuffle=False)
 
-    model = SimpleCalculusModel(
+    print("[DEBUG] Building model...", flush=True)
+    model = CalculusSolverModel(
         vocab_size=REAL_VOCAB_SIZE,
+        num_rules=len(RULE_LABELS),
         hidden_dim=config["hidden_dim"],
-        pad_id=PAD_ID,
-        max_len=MAX_LEN,
+        rule_labels=RULE_LABELS,
     )
+    print("[DEBUG] Model built.", flush=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=config["learning_rate"])
-    grad_clip_max_norm = config.get("grad_clip_max_norm", 1.0)
 
-    criterion = nn.CrossEntropyLoss(ignore_index=PAD_ID)
+    criterion_sequence = nn.CrossEntropyLoss(reduction='none')
+    criterion_rule = nn.CrossEntropyLoss()
+    criterion_verify = nn.BCEWithLogitsLoss()
 
     best_val_loss = float("inf")
     patience_counter = 0
     metrics_log = []
-
+    
     early_stopping_cfg = config.get("early_stopping", False)
     if isinstance(early_stopping_cfg, dict):
         patience = early_stopping_cfg.get("patience", 3)
@@ -234,58 +242,90 @@ def run_training_pipeline():
 
     epochs = config.get("epochs", 1)
 
+    # Resume logic
+    print(f"[DEBUG] Checking for existing checkpoint at {FINAL_CHECKPOINT_PATH}...", flush=True)
     if FINAL_CHECKPOINT_PATH.exists():
         try:
+            print("[DEBUG] Checkpoint found, loading it (this can take a moment)...", flush=True)
             model.load_state_dict(torch.load(str(FINAL_CHECKPOINT_PATH), map_location="cpu"))
-            print(f"Loaded existing checkpoint from {FINAL_CHECKPOINT_PATH} to resume training.")
+            print(f"Loaded existing checkpoint from {FINAL_CHECKPOINT_PATH} to resume training.", flush=True)
             if val_loader is not None:
-                val_loss, val_acc = evaluate_validation(model, val_loader, criterion)
+                print("[DEBUG] Running initial validation pass on resumed checkpoint...", flush=True)
+                val_loss, val_seq, val_rule, val_verify = evaluate_validation(
+                    model, val_loader, criterion_sequence, criterion_rule, criterion_verify
+                )
                 best_val_loss = val_loss
-                print(f"Initial val loss from resumed checkpoint: {best_val_loss:.4f}")
+                print(f"Initial val loss from resumed checkpoint: {best_val_loss:.4f}", flush=True)
         except Exception as e:
-            print(f"Could not load checkpoint to resume: {e}")
+            print(f"Could not load checkpoint to resume: {e}", flush=True)
+    else:
+        print("[DEBUG] No existing checkpoint, starting fresh.", flush=True)
 
+    print("[DEBUG] Entering training loop...", flush=True)
     for epoch in range(1, epochs + 1):
+        print(f"[DEBUG] Starting epoch {epoch}, waiting for first batch from DataLoader...", flush=True)
         model.train()
         epoch_loss = 0.0
         steps_run = 0
-
+        
         for step, batch in enumerate(train_loader):
             if step >= config.get("max_steps", 1500):
                 break
+            if step < 3 or step % 10 == 0:
+                print(f"[DEBUG] epoch {epoch} step {step} - batch received, running forward/backward...", flush=True)
             optimizer.zero_grad()
 
-            src_seq = batch["src_seq"]
-            tgt_in = batch["tgt_in_seq"][:, :-1]
-            tgt_out = batch["tgt_out_seq"][:, 1:]
+            batch_size, seq_len = batch["src_seq"].shape
 
-            logits = model(src_seq, tgt_in)
-            loss = criterion(logits.reshape(-1, REAL_VOCAB_SIZE), tgt_out.reshape(-1))
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_max_norm)
+            decoder_logits, rule_logits, verifier_logits = model(
+                batch["src_seq"],
+                batch["tgt_in_seq"],
+            )
+
+            raw_loss_seq = criterion_sequence(
+                decoder_logits.reshape(-1, REAL_VOCAB_SIZE), batch["tgt_out_seq"].reshape(-1)
+            )
+            raw_loss_seq = raw_loss_seq.view(batch_size, -1).mean(dim=-1)
+
+            mask = (batch["v_state"] == 1.0).float()
+            loss_seq = (raw_loss_seq * mask).sum() / (mask.sum() + 1e-8)
+
+            loss_rule = criterion_rule(rule_logits, batch["rule_id"])
+            loss_verify = criterion_verify(verifier_logits.squeeze(-1), batch["v_state"])
+
+            total_loss = loss_seq + loss_rule + loss_verify
+            total_loss.backward()
             optimizer.step()
-
-            epoch_loss += loss.item()
+            
+            epoch_loss += total_loss.item()
             steps_run += 1
 
         avg_train_loss = epoch_loss / max(steps_run, 1)
         print(f"Epoch {epoch}/{epochs} - Train Loss: {avg_train_loss:.4f}")
 
+        # ── Validation + best-checkpoint logic ────────────────────────────────
         epoch_metrics = {
             "epoch": epoch,
             "train_loss": avg_train_loss,
             "val_loss": None,
-            "val_seq_acc": None,
+            "val_seq": None,
+            "val_rule": None,
+            "val_verify": None,
             "saved": False,
         }
 
         if val_loader is not None:
-            val_loss, val_acc = evaluate_validation(model, val_loader, criterion)
-            print(f"Epoch {epoch} - Val Loss: {val_loss:.4f}  Val Seq Accuracy: {val_acc:.4f}")
-
+            val_loss, val_seq, val_rule, val_verify = evaluate_validation(
+                model, val_loader, criterion_sequence, criterion_rule, criterion_verify
+            )
+            print(f"Epoch {epoch} - Val Loss: {val_loss:.4f} (Seq: {val_seq:.4f}, Rule: {val_rule:.4f}, Verify: {val_verify:.4f})")
+            
             epoch_metrics["val_loss"] = val_loss
-            epoch_metrics["val_seq_acc"] = val_acc
+            epoch_metrics["val_seq"] = val_seq
+            epoch_metrics["val_rule"] = val_rule
+            epoch_metrics["val_verify"] = val_verify
 
+            # Best-checkpoint logic: only save when val loss improves
             if val_loss < best_val_loss - (min_delta if use_early_stopping else 0):
                 best_val_loss = val_loss
                 patience_counter = 0
@@ -301,6 +341,7 @@ def run_training_pipeline():
                     metrics_log.append(epoch_metrics)
                     break
         else:
+            # No validation set — save every epoch
             CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), str(FINAL_CHECKPOINT_PATH))
             print(f"Checkpoint saved to {FINAL_CHECKPOINT_PATH}")
@@ -308,7 +349,26 @@ def run_training_pipeline():
 
         metrics_log.append(epoch_metrics)
 
+    # ── Write training results ────────────────────────────────────────────────
     write_training_results(metrics_log, best_val_loss)
+
+    # ── Stamp checkpoint provenance (git commit + config hash) ─────────────────
+    # Automatic, on purpose: this is exactly the "which commit/config actually
+    # produced best.pt" gap that made the original 43.3%/66.7% numbers and the
+    # config.json-says-2-epochs-but-log-says-5 mismatch impossible to trace.
+    if FINAL_CHECKPOINT_PATH.exists():
+        record = stamp_and_record(
+            checkpoint_path=str(FINAL_CHECKPOINT_PATH),
+            config_path="config.json",
+            training_results_path=str(Path("docs") / "TRAINING_RESULTS.md"),
+        )
+        if record["warnings"]:
+            print("[WARNING] Checkpoint provenance issues:")
+            for w in record["warnings"]:
+                print(f"  - {w}")
+    else:
+        print("[WARNING] No checkpoint was saved this run -- skipping provenance stamp.")
+
     print("--- Training complete ---")
 
 
