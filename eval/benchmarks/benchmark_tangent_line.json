@@ -37,7 +37,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -77,7 +77,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -117,7 +117,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -157,7 +157,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -197,7 +197,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -237,7 +237,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -277,7 +277,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -317,7 +317,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -357,7 +357,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -397,7 +397,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -437,7 +437,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -477,7 +477,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -517,7 +517,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -557,7 +557,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -597,7 +597,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -637,7 +637,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -677,7 +677,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -717,7 +717,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -757,7 +757,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -797,7 +797,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -837,7 +837,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -877,7 +877,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -917,7 +917,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -957,7 +957,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -997,7 +997,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1037,7 +1037,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1077,7 +1077,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1117,7 +1117,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1157,7 +1157,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1197,7 +1197,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1237,7 +1237,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1277,7 +1277,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1317,7 +1317,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1357,7 +1357,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1397,7 +1397,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1437,7 +1437,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1477,7 +1477,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1517,7 +1517,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1557,7 +1557,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1597,7 +1597,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1637,7 +1637,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1677,7 +1677,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1717,7 +1717,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1757,7 +1757,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1797,7 +1797,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1837,7 +1837,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1877,7 +1877,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1917,7 +1917,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1957,7 +1957,7 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   },
   {
     "expr": {
@@ -1997,6 +1997,6 @@
       "deno": 1
     },
     "operation": "tangent_line",
-    "expected_rule": "tangent_line"
+    "expected_rule": "power_rule"
   }
 ]

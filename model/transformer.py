@@ -1,3 +1,5 @@
+from typing import List, Optional
+
 import torch
 import torch.nn as nn
 from .tree_encoder import TreeEncoder
@@ -10,13 +12,13 @@ class CalculusSolverModel(nn.Module):
         self,
         vocab_size: int,
         num_rules: int,
-        rule_labels: list = None,  # Handled rule_labels dynamically
         hidden_dim: int = 128,
         num_heads: int = 8,
         num_layers: int = 8,
         ffn_dim: int = 2048,
         dropout: float = 0.1,
         position_dim: int = 3,
+        rule_labels: Optional[List[str]] = None,
         pad_id: int = 0,
     ):
         super().__init__()
@@ -56,7 +58,7 @@ class CalculusSolverModel(nn.Module):
             templates=templates
         )
 
-    def forward(self, src_seq, tgt_in_seq, true_rule_ids=None):
+    def forward(self, src_seq, tgt_in_seq):
         device = src_seq.device
         batch_size, seq_len = src_seq.size()
         

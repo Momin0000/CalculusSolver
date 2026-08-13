@@ -11,7 +11,8 @@ from pathlib import Path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from tokenizer.slang_serializer import serialize_slang_math
-from model.simple_transformer import SimpleCalculusModel
+from solver_model import CalculusSolverModel
+from checkpoint_provenance import stamp_and_record
 
 with open("config.json", "r") as cfg_file:
     config = json.load(cfg_file)
@@ -27,6 +28,12 @@ def get_git_commit_hash():
 
 
 def flatten_vocab(raw_vocab):
+    """
+    Same flattening rule as inference/beam_search.flatten_vocab on org main:
+    merge every sub-dict, skip keys starting with '_' (e.g. _comment, _version).
+    Keeping this identical to beam_search's version on purpose, so training-time
+    token IDs and inference-time token IDs can never drift apart again.
+    """
     flat = {}
     for key, value in raw_vocab.items():
         if key.startswith("_"):
@@ -40,14 +47,16 @@ with open("tokenizer/vocab.json", "r", encoding="utf-8") as f:
     _raw_vocab = json.load(f)
 
 vocab_mapping = flatten_vocab(_raw_vocab)
+
+# IDs are NOT contiguous (gaps by design — see docs/KNOWN_ISSUES.md, STRUCT:OPEN @ 23).
+# len(vocab_mapping) undercounts; embedding table must cover the highest real ID.
 REAL_VOCAB_SIZE = max(vocab_mapping.values()) + 1
 
 # Rule labels/tokens, derived from vocab's rule_tokens, ordered by ID.
 _rule_items = sorted(_raw_vocab.get("rule_tokens", {}).items(), key=lambda kv: kv[1])
-RULE_TOKEN_STRINGS = [name for name, _ in _rule_items]  # e.g. "RULE:power_rule"
+RULE_LABELS = [name.split("RULE:", 1)[1] for name, _ in _rule_items]
 
 MAX_LEN = config.get("max_len", 32)
-PAD_ID = vocab_mapping["[PAD]"]
 
 CHECKPOINT_DIR = Path("checkpoints/final")
 FINAL_CHECKPOINT_PATH = CHECKPOINT_DIR / "best.pt"
@@ -64,10 +73,9 @@ class SlangDatasetLoader(Dataset):
     def __len__(self):
         return len(self.data)
 
-    def _tokenize(self, envelope, extra_prefix_tokens=None, add_boundaries=False):
+    def _tokenize(self, envelope, add_boundaries=False):
+        # serialize_slang_math returns a single List[str] — no parent/child tuple.
         tokens = serialize_slang_math(envelope)
-        if extra_prefix_tokens:
-            tokens = list(extra_prefix_tokens) + tokens
         if add_boundaries:
             tokens = ["[BOS]"] + tokens + ["[EOS]"]
 
@@ -97,21 +105,18 @@ class SlangDatasetLoader(Dataset):
         prefix = [rule_token] if rule_token else []
 
         src_ids = self._tokenize(item["src_tokens"], add_boundaries=False)
-        tgt_in_ids = self._tokenize(
-            item["tgt_input_tokens"], extra_prefix_tokens=prefix, add_boundaries=True
-        )
-        tgt_out_ids = self._tokenize(
-            item["tgt_output_tokens"], extra_prefix_tokens=prefix, add_boundaries=True
-        )
+        tgt_in_ids = self._tokenize(item["tgt_input_tokens"], add_boundaries=True)
+        tgt_out_ids = self._tokenize(item["tgt_output_tokens"], add_boundaries=True)
         return {
             "src_seq": src_ids,
             "tgt_in_seq": tgt_in_ids,
             "tgt_out_seq": tgt_out_ids,
+            "rule_id": torch.tensor(item["rule_ids"], dtype=torch.long),
             "v_state": torch.tensor(item["verification_state"], dtype=torch.float),
         }
 
 
-def evaluate_validation(model, val_loader, criterion):
+def evaluate_validation(model, val_loader, criterion_sequence, criterion_rule, criterion_verify):
     model.eval()
     total_loss = 0.0
     total_correct_seq = 0
@@ -145,7 +150,7 @@ def evaluate_validation(model, val_loader, criterion):
             total_correct_seq += correct_seq.sum().item()
             total_seq += tgt_out.size(0)
             steps += 1
-
+            
     if steps == 0:
         return 0.0, 0.0, 0.0
 
@@ -189,7 +194,6 @@ def write_training_results(metrics_log, best_val_loss, git_commit_hash):
         "",
         "## Configuration Snapshot",
         "",
-        f"- **Architecture:** SimpleCalculusModel (standard nn.Transformer encoder-decoder)",
         f"- **Learning Rate:** {config.get('learning_rate')}",
         f"- **Warmup Steps:** {config.get('warmup_steps', 1000)}",
         f"- **Batch Size:** {config.get('batch_size')}",
@@ -204,7 +208,7 @@ def write_training_results(metrics_log, best_val_loss, git_commit_hash):
 
     with open(docs_dir / "TRAINING_RESULTS.md", "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-    print("Training results written to docs/TRAINING_RESULTS.md")
+    print(f"Training results written to docs/TRAINING_RESULTS.md")
 
 
 def run_training_pipeline():
@@ -216,18 +220,25 @@ def run_training_pipeline():
         print("CRITICAL: Train split missing! Run problem_generator.py first.")
         sys.exit(1)
 
-    train_loader = DataLoader(SlangDatasetLoader(train_file), batch_size=config["batch_size"], shuffle=True)
+    print("[DEBUG] Loading train dataset into memory...", flush=True)
+    train_dataset = SlangDatasetLoader(train_file)
+    print(f"[DEBUG] Train dataset loaded: {len(train_dataset)} examples", flush=True)
+    train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True)
 
     val_file = Path("data/splits/val.jsonl")
     val_loader = None
     if val_file.exists() and config.get("validation_logging", True):
-        val_loader = DataLoader(SlangDatasetLoader(val_file), batch_size=config["batch_size"], shuffle=False)
+        print("[DEBUG] Loading val dataset into memory...", flush=True)
+        val_dataset = SlangDatasetLoader(val_file)
+        print(f"[DEBUG] Val dataset loaded: {len(val_dataset)} examples", flush=True)
+        val_loader = DataLoader(val_dataset, batch_size=config["batch_size"], shuffle=False)
 
-    model = SimpleCalculusModel(
+    print("[DEBUG] Building model...", flush=True)
+    model = CalculusSolverModel(
         vocab_size=REAL_VOCAB_SIZE,
+        num_rules=len(RULE_LABELS),
         hidden_dim=config["hidden_dim"],
-        pad_id=PAD_ID,
-        max_len=MAX_LEN,
+        rule_labels=RULE_LABELS,
     )
 
     base_lr = config["learning_rate"]
@@ -248,7 +259,7 @@ def run_training_pipeline():
     best_val_loss = float("inf")
     patience_counter = 0
     metrics_log = []
-
+    
     early_stopping_cfg = config.get("early_stopping", False)
     if isinstance(early_stopping_cfg, dict):
         patience = early_stopping_cfg.get("patience", 3)
@@ -268,19 +279,26 @@ def run_training_pipeline():
     epochs = config.get("epochs", 1)
     global_step = 0
 
+    print("[DEBUG] Entering training loop...", flush=True)
     for epoch in range(1, epochs + 1):
+        print(f"[DEBUG] Starting epoch {epoch}, waiting for first batch from DataLoader...", flush=True)
         model.train()
         epoch_loss = 0.0
         steps_run = 0
-
+        
         for step, batch in enumerate(train_loader):
             if step >= config.get("max_steps", 1500):
                 break
+            if step < 3 or step % 10 == 0:
+                print(f"[DEBUG] epoch {epoch} step {step} - batch received, running forward/backward...", flush=True)
             optimizer.zero_grad()
 
-            src_seq = batch["src_seq"]
-            tgt_in = batch["tgt_in_seq"][:, :-1]
-            tgt_out = batch["tgt_out_seq"][:, 1:]
+            batch_size, seq_len = batch["src_seq"].shape
+
+            decoder_logits, rule_logits, verifier_logits = model(
+                batch["src_seq"],
+                batch["tgt_in_seq"],
+            )
 
             logits = model(src_seq, tgt_in)
             loss = criterion(logits.reshape(-1, REAL_VOCAB_SIZE), tgt_out.reshape(-1))
@@ -298,6 +316,7 @@ def run_training_pipeline():
         current_lr = scheduler.get_last_lr()[0]
         print(f"Epoch {epoch}/{epochs} - Train Loss: {avg_train_loss:.4f} (LR: {current_lr:.6f})")
 
+        # ── Validation + best-checkpoint logic ────────────────────────────────
         epoch_metrics = {
             "epoch": epoch,
             "train_loss": avg_train_loss,
@@ -318,6 +337,7 @@ def run_training_pipeline():
             epoch_metrics["val_token_acc"] = val_token_acc
             epoch_metrics["val_seq_acc"] = val_seq_acc
 
+            # Best-checkpoint logic: only save when val loss improves
             if val_loss < best_val_loss - (min_delta if use_early_stopping else 0):
                 best_val_loss = val_loss
                 patience_counter = 0
@@ -333,6 +353,7 @@ def run_training_pipeline():
                     metrics_log.append(epoch_metrics)
                     break
         else:
+            # No validation set — save every epoch
             CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), str(FINAL_CHECKPOINT_PATH))
             print(f"Checkpoint saved to {FINAL_CHECKPOINT_PATH}")

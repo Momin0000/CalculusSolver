@@ -86,6 +86,7 @@ def evaluate_cli_input():
         vocab_size=REAL_VOCAB_SIZE,
         num_rules=len(RULE_LABELS),
         hidden_dim=config["hidden_dim"],
+        rule_labels=RULE_LABELS,
     )
 
     checkpoint_path = "checkpoints/checkpoint_epoch_1.pt"
