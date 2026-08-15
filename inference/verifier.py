@@ -359,7 +359,12 @@ def verify(input_env: Dict[str, Any], output_tokens: List[str]) -> Dict[str, Any
     elif op == "gradient":
         oracle_fn = lambda inp: gradient_oracle(inp["expr"], get_variables(inp))
     elif op == "tangent_line":
-        oracle_fn = lambda inp: tangent_line_oracle(inp["expr"], inp["var"], float(inp["point"]))
+        def _tangent_line_fn(inp):
+            point_val = inp["point"]
+            if isinstance(point_val, dict):
+                point_val = point_val.get(inp["var"], next(iter(point_val.values())))
+            return tangent_line_oracle(inp["expr"], inp["var"], float(point_val))
+        oracle_fn = _tangent_line_fn
     elif op == "product_rule":
         oracle_fn = lambda inp: product_rule_differentiate(inp["u"], inp["v"], inp["var"])
     elif op == "quotient_rule":

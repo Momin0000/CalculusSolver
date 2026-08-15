@@ -69,9 +69,12 @@ class SimpleCalculusModel(nn.Module):
 
     @staticmethod
     def _causal_mask(seq_len, device):
-        return torch.triu(
-            torch.full((seq_len, seq_len), float("-inf"), device=device), diagonal=1
-        )
+    # Bool mask instead of float -inf mask, matching the dtype of the
+    # padding masks to eliminate PyTorch's mismatched-mask-type warning.
+        mask = torch.triu(torch.ones(seq_len, seq_len, dtype=torch.bool, device=device), diagonal=1)
+        return mask
+
+
 
     def forward(self, src_seq, tgt_in_seq):
         device = src_seq.device
