@@ -1,9 +1,11 @@
 import sys
 import os
 import json
+import subprocess
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
+from torch.optim.lr_scheduler import LambdaLR
 from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
@@ -14,6 +16,15 @@ from checkpoint_provenance import stamp_and_record
 
 with open("config.json", "r") as cfg_file:
     config = json.load(cfg_file)
+
+
+def get_git_commit_hash():
+    """Returns the exact current git commit hash for provenance tracking."""
+    try:
+        hash_str = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
+        return hash_str
+    except Exception:
+        return "UNKNOWN_COMMIT"
 
 
 def flatten_vocab(raw_vocab):
@@ -41,7 +52,7 @@ vocab_mapping = flatten_vocab(_raw_vocab)
 # len(vocab_mapping) undercounts; embedding table must cover the highest real ID.
 REAL_VOCAB_SIZE = max(vocab_mapping.values()) + 1
 
-# Rule labels for RuleHead, derived from vocab's rule_tokens, ordered by ID.
+# Rule labels/tokens, derived from vocab's rule_tokens, ordered by ID.
 _rule_items = sorted(_raw_vocab.get("rule_tokens", {}).items(), key=lambda kv: kv[1])
 RULE_LABELS = [name.split("RULE:", 1)[1] for name, _ in _rule_items]
 
@@ -84,6 +95,15 @@ class SlangDatasetLoader(Dataset):
 
     def __getitem__(self, idx):
         item = self.data[idx]
+
+        rule_idx = item["rule_ids"]
+        rule_token = (
+            RULE_TOKEN_STRINGS[rule_idx]
+            if 0 <= rule_idx < len(RULE_TOKEN_STRINGS)
+            else None
+        )
+        prefix = [rule_token] if rule_token else []
+
         src_ids = self._tokenize(item["src_tokens"], add_boundaries=False)
         tgt_in_ids = self._tokenize(item["tgt_input_tokens"], add_boundaries=True)
         tgt_out_ids = self._tokenize(item["tgt_output_tokens"], add_boundaries=True)
@@ -98,85 +118,91 @@ class SlangDatasetLoader(Dataset):
 
 def evaluate_validation(model, val_loader, criterion_sequence, criterion_rule, criterion_verify):
     model.eval()
-    total_val_loss = 0.0
-    total_seq_loss = 0.0
-    total_rule_loss = 0.0
-    total_verify_loss = 0.0
+    total_loss = 0.0
+    total_correct_seq = 0
+    total_correct_tokens = 0
+    total_valid_tokens = 0
+    total_seq = 0
     steps = 0
+
     with torch.no_grad():
         for batch in val_loader:
-            batch_size, seq_len = batch["src_seq"].shape
-            decoder_logits, rule_logits, verifier_logits = model(
-                batch["src_seq"],
-                batch["tgt_in_seq"],
+            src_seq = batch["src_seq"]
+            tgt_in = batch["tgt_in_seq"][:, :-1]
+            tgt_out = batch["tgt_out_seq"][:, 1:]
+
+            logits = model(src_seq, tgt_in)
+            loss = criterion(
+                logits.reshape(-1, REAL_VOCAB_SIZE), tgt_out.reshape(-1)
             )
+            total_loss += loss.item()
 
-            raw_loss_seq = criterion_sequence(
-                decoder_logits.reshape(-1, REAL_VOCAB_SIZE), batch["tgt_out_seq"].reshape(-1)
-            )
-            raw_loss_seq = raw_loss_seq.view(batch_size, -1).mean(dim=-1)
+            preds = logits.argmax(dim=-1)
+            mask = tgt_out != PAD_ID
 
-            mask = (batch["v_state"] == 1.0).float()
-            loss_seq = (raw_loss_seq * mask).sum() / (mask.sum() + 1e-8)
+            # Per-token accuracy logic
+            correct_token_mask = (preds == tgt_out) & mask
+            total_correct_tokens += correct_token_mask.sum().item()
+            total_valid_tokens += mask.sum().item()
 
-            loss_rule = criterion_rule(rule_logits, batch["rule_id"])
-            loss_verify = criterion_verify(verifier_logits.squeeze(-1), batch["v_state"])
-
-            total_loss = loss_seq + loss_rule + loss_verify
-            
-            total_val_loss += total_loss.item()
-            total_seq_loss += loss_seq.item()
-            total_rule_loss += loss_rule.item()
-            total_verify_loss += loss_verify.item()
+            # Exact sequence match logic
+            correct_seq = ((preds == tgt_out) | ~mask).all(dim=1)
+            total_correct_seq += correct_seq.sum().item()
+            total_seq += tgt_out.size(0)
             steps += 1
             
     if steps == 0:
-        return 0.0, 0.0, 0.0, 0.0
-    return (
-        total_val_loss / steps,
-        total_seq_loss / steps,
-        total_rule_loss / steps,
-        total_verify_loss / steps,
+        return 0.0, 0.0, 0.0
+
+    avg_loss = total_loss / steps
+    seq_acc = total_correct_seq / max(total_seq, 1)
+    token_acc = (
+        total_correct_tokens / max(total_valid_tokens, 1)
+        if total_valid_tokens > 0
+        else 0.0
     )
 
+    return avg_loss, seq_acc, token_acc
 
-def write_training_results(metrics_log, best_val_loss):
-    """Write per-epoch metrics to docs/TRAINING_RESULTS.md."""
+
+def write_training_results(metrics_log, best_val_loss, git_commit_hash):
     docs_dir = Path("docs")
     docs_dir.mkdir(exist_ok=True)
 
     lines = [
         "# Training Results",
         "",
+        f"**Git Commit Hash:** `{git_commit_hash}`",
         f"**Best Validation Loss:** {best_val_loss:.4f}" if best_val_loss < float("inf") else "**Best Validation Loss:** N/A",
         f"**Total Epochs Run:** {len(metrics_log)}",
         "",
         "## Per-Epoch Metrics",
         "",
-        "| Epoch | Train Loss | Val Loss | Val Seq | Val Rule | Val Verify | Checkpoint Saved |",
-        "|-------|-----------|----------|---------|----------|------------|-----------------|",
+        "| Epoch | Train Loss | Val Loss | Per-Token Acc | Val Seq Acc | Saved |",
+        "|-------|-----------|----------|---------------|-------------|-------|",
     ]
     for m in metrics_log:
         val_loss = f"{m['val_loss']:.4f}" if m['val_loss'] is not None else "N/A"
-        val_seq = f"{m['val_seq']:.4f}" if m['val_seq'] is not None else "N/A"
-        val_rule = f"{m['val_rule']:.4f}" if m['val_rule'] is not None else "N/A"
-        val_verify = f"{m['val_verify']:.4f}" if m['val_verify'] is not None else "N/A"
+        token_acc = f"{m['val_token_acc']:.4f}" if m['val_token_acc'] is not None else "N/A"
+        val_acc = f"{m['val_seq_acc']:.4f}" if m['val_seq_acc'] is not None else "N/A"
         saved = "Yes" if m['saved'] else "No"
         lines.append(
-            f"| {m['epoch']} | {m['train_loss']:.4f} | {val_loss} | {val_seq} | {val_rule} | {val_verify} | {saved} |"
+            f"| {m['epoch']} | {m['train_loss']:.4f} | {val_loss} | {token_acc} | {val_acc} | {saved} |"
         )
 
     lines.extend([
         "",
-        "## Configuration",
+        "## Configuration Snapshot",
         "",
         f"- **Learning Rate:** {config.get('learning_rate')}",
+        f"- **Warmup Steps:** {config.get('warmup_steps', 1000)}",
         f"- **Batch Size:** {config.get('batch_size')}",
         f"- **Hidden Dim:** {config.get('hidden_dim')}",
         f"- **Max Steps/Epoch:** {config.get('max_steps')}",
         f"- **Early Stopping:** patience={config.get('early_stopping', {}).get('patience', 'N/A')}, min_delta={config.get('early_stopping', {}).get('min_delta', 'N/A')}",
         f"- **Vocab Size:** {REAL_VOCAB_SIZE}",
-        f"- **Num Rules:** {len(RULE_LABELS)}",
+        f"- **Gradient Clipping:** max_norm={config.get('grad_clip_max_norm', 1.0)}",
+        f"- **Rule Prediction:** Folded into output sequence as leading RULE:xxx token",
         "",
     ])
 
@@ -186,11 +212,12 @@ def write_training_results(metrics_log, best_val_loss):
 
 
 def run_training_pipeline():
-    print(f"--- Training (vocab size: {REAL_VOCAB_SIZE}, {len(RULE_LABELS)} rules) ---", flush=True)
+    commit_hash = get_git_commit_hash()
+    print(f"--- Training SimpleCalculusModel (commit: {commit_hash}, vocab: {REAL_VOCAB_SIZE}) ---")
 
     train_file = Path("data/splits/train.jsonl")
     if not train_file.exists():
-        print("Train split missing!", flush=True)
+        print("CRITICAL: Train split missing! Run problem_generator.py first.")
         sys.exit(1)
 
     print("[DEBUG] Loading train dataset into memory...", flush=True)
@@ -213,12 +240,21 @@ def run_training_pipeline():
         hidden_dim=config["hidden_dim"],
         rule_labels=RULE_LABELS,
     )
-    print("[DEBUG] Model built.", flush=True)
-    optimizer = torch.optim.Adam(model.parameters(), lr=config["learning_rate"])
 
-    criterion_sequence = nn.CrossEntropyLoss(reduction='none')
-    criterion_rule = nn.CrossEntropyLoss()
-    criterion_verify = nn.BCEWithLogitsLoss()
+    base_lr = config["learning_rate"]
+    optimizer = torch.optim.Adam(model.parameters(), lr=base_lr)
+
+    # Linear Warmup Scheduler setup
+    warmup_steps = config.get("warmup_steps", 1000)
+    def lr_lambda(current_step):
+        if current_step < warmup_steps:
+            return float(current_step) / float(max(1, warmup_steps))
+        return 1.0
+
+    scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+    grad_clip_max_norm = config.get("grad_clip_max_norm", 1.0)
+    criterion = nn.CrossEntropyLoss(ignore_index=PAD_ID)
 
     best_val_loss = float("inf")
     patience_counter = 0
@@ -241,25 +277,7 @@ def run_training_pipeline():
         use_early_stopping = False
 
     epochs = config.get("epochs", 1)
-
-    # Resume logic
-    print(f"[DEBUG] Checking for existing checkpoint at {FINAL_CHECKPOINT_PATH}...", flush=True)
-    if FINAL_CHECKPOINT_PATH.exists():
-        try:
-            print("[DEBUG] Checkpoint found, loading it (this can take a moment)...", flush=True)
-            model.load_state_dict(torch.load(str(FINAL_CHECKPOINT_PATH), map_location="cpu"))
-            print(f"Loaded existing checkpoint from {FINAL_CHECKPOINT_PATH} to resume training.", flush=True)
-            if val_loader is not None:
-                print("[DEBUG] Running initial validation pass on resumed checkpoint...", flush=True)
-                val_loss, val_seq, val_rule, val_verify = evaluate_validation(
-                    model, val_loader, criterion_sequence, criterion_rule, criterion_verify
-                )
-                best_val_loss = val_loss
-                print(f"Initial val loss from resumed checkpoint: {best_val_loss:.4f}", flush=True)
-        except Exception as e:
-            print(f"Could not load checkpoint to resume: {e}", flush=True)
-    else:
-        print("[DEBUG] No existing checkpoint, starting fresh.", flush=True)
+    global_step = 0
 
     print("[DEBUG] Entering training loop...", flush=True)
     for epoch in range(1, epochs + 1):
@@ -282,48 +300,42 @@ def run_training_pipeline():
                 batch["tgt_in_seq"],
             )
 
-            raw_loss_seq = criterion_sequence(
-                decoder_logits.reshape(-1, REAL_VOCAB_SIZE), batch["tgt_out_seq"].reshape(-1)
-            )
-            raw_loss_seq = raw_loss_seq.view(batch_size, -1).mean(dim=-1)
+            logits = model(src_seq, tgt_in)
+            loss = criterion(logits.reshape(-1, REAL_VOCAB_SIZE), tgt_out.reshape(-1))
+            loss.backward()
 
-            mask = (batch["v_state"] == 1.0).float()
-            loss_seq = (raw_loss_seq * mask).sum() / (mask.sum() + 1e-8)
-
-            loss_rule = criterion_rule(rule_logits, batch["rule_id"])
-            loss_verify = criterion_verify(verifier_logits.squeeze(-1), batch["v_state"])
-
-            total_loss = loss_seq + loss_rule + loss_verify
-            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_max_norm)
             optimizer.step()
-            
-            epoch_loss += total_loss.item()
+            scheduler.step()
+
+            global_step += 1
+            epoch_loss += loss.item()
             steps_run += 1
 
         avg_train_loss = epoch_loss / max(steps_run, 1)
-        print(f"Epoch {epoch}/{epochs} - Train Loss: {avg_train_loss:.4f}")
+        current_lr = scheduler.get_last_lr()[0]
+        print(f"Epoch {epoch}/{epochs} - Train Loss: {avg_train_loss:.4f} (LR: {current_lr:.6f})")
 
         # ── Validation + best-checkpoint logic ────────────────────────────────
         epoch_metrics = {
             "epoch": epoch,
             "train_loss": avg_train_loss,
             "val_loss": None,
-            "val_seq": None,
-            "val_rule": None,
-            "val_verify": None,
+            "val_token_acc": None,
+            "val_seq_acc": None,
             "saved": False,
         }
 
         if val_loader is not None:
-            val_loss, val_seq, val_rule, val_verify = evaluate_validation(
-                model, val_loader, criterion_sequence, criterion_rule, criterion_verify
+            val_loss, val_seq_acc, val_token_acc = evaluate_validation(model, val_loader, criterion)
+            print(
+                f"Epoch {epoch} - Val Loss: {val_loss:.4f} | "
+                f"Token Acc: {val_token_acc:.4f} | Seq Acc: {val_seq_acc:.4f}"
             )
-            print(f"Epoch {epoch} - Val Loss: {val_loss:.4f} (Seq: {val_seq:.4f}, Rule: {val_rule:.4f}, Verify: {val_verify:.4f})")
-            
+
             epoch_metrics["val_loss"] = val_loss
-            epoch_metrics["val_seq"] = val_seq
-            epoch_metrics["val_rule"] = val_rule
-            epoch_metrics["val_verify"] = val_verify
+            epoch_metrics["val_token_acc"] = val_token_acc
+            epoch_metrics["val_seq_acc"] = val_seq_acc
 
             # Best-checkpoint logic: only save when val loss improves
             if val_loss < best_val_loss - (min_delta if use_early_stopping else 0):
@@ -335,7 +347,7 @@ def run_training_pipeline():
                 epoch_metrics["saved"] = True
             else:
                 patience_counter += 1
-                print(f"  Epoch {epoch}: val loss {val_loss:.4f} did not improve from {best_val_loss:.4f}, skipping checkpoint save.")
+                print(f"  Epoch {epoch}: val loss {val_loss:.4f} did not improve from {best_val_loss:.4f}.")
                 if use_early_stopping and patience_counter >= patience:
                     print("Early stopping triggered. Training stopped.")
                     metrics_log.append(epoch_metrics)
@@ -349,26 +361,7 @@ def run_training_pipeline():
 
         metrics_log.append(epoch_metrics)
 
-    # ── Write training results ────────────────────────────────────────────────
-    write_training_results(metrics_log, best_val_loss)
-
-    # ── Stamp checkpoint provenance (git commit + config hash) ─────────────────
-    # Automatic, on purpose: this is exactly the "which commit/config actually
-    # produced best.pt" gap that made the original 43.3%/66.7% numbers and the
-    # config.json-says-2-epochs-but-log-says-5 mismatch impossible to trace.
-    if FINAL_CHECKPOINT_PATH.exists():
-        record = stamp_and_record(
-            checkpoint_path=str(FINAL_CHECKPOINT_PATH),
-            config_path="config.json",
-            training_results_path=str(Path("docs") / "TRAINING_RESULTS.md"),
-        )
-        if record["warnings"]:
-            print("[WARNING] Checkpoint provenance issues:")
-            for w in record["warnings"]:
-                print(f"  - {w}")
-    else:
-        print("[WARNING] No checkpoint was saved this run -- skipping provenance stamp.")
-
+    write_training_results(metrics_log, best_val_loss, commit_hash)
     print("--- Training complete ---")
 
 

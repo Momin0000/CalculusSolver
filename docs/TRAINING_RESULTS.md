@@ -1,31 +1,33 @@
 # Training Results
 
-**Best Validation Loss:** 0.0317
+**Git Commit Hash:** `d26bbe19f4b0b694d6bca560b51cd60e42a36cbc`
+**Best Validation Loss:** 0.0167
 **Total Epochs Run:** 10
 
 ## Per-Epoch Metrics
 
-| Epoch | Train Loss | Val Loss | Val Seq Accuracy | Checkpoint Saved |
-|-------|-----------|----------|-------------------|-----------------|
-| 1 | 0.0981 | 0.0322 | 0.7711 | Yes |
-| 2 | 0.0330 | 0.0317 | 0.7730 | Yes |
-| 3 | 0.0323 | 0.0316 | 0.7730 | No |
-| 4 | 0.0324 | 0.0318 | 0.7705 | No |
-| 5 | 0.0324 | 0.0317 | 0.7730 | No |
-| 6 | 0.0317 | 0.0316 | 0.7730 | No |
-| 7 | 0.0323 | 0.0316 | 0.7730 | No |
-| 8 | 0.0318 | 0.0332 | 0.7676 | No |
-| 9 | 0.0320 | 0.0315 | 0.7730 | No |
-| 10 | 0.0318 | 0.0314 | 0.7730 | No |
+| Epoch | Train Loss | Val Loss | Per-Token Acc | Val Seq Acc | Saved |
+|-------|-----------|----------|---------------|-------------|-------|
+| 1 | 0.2888 | 0.0200 | 0.9856 | 0.7683 | Yes |
+| 2 | 0.0191 | 0.0170 | 0.9898 | 0.8346 | Yes |
+| 3 | 0.0179 | 0.0170 | 0.9898 | 0.8345 | No |
+| 4 | 0.0176 | 0.0202 | 0.9892 | 0.8252 | No |
+| 5 | 0.0173 | 0.0167 | 0.9899 | 0.8363 | Yes |
+| 6 | 0.0172 | 0.0171 | 0.9898 | 0.8346 | No |
+| 7 | 0.0170 | 0.0168 | 0.9899 | 0.8363 | No |
+| 8 | 0.0170 | 0.0173 | 0.9897 | 0.8335 | No |
+| 9 | 0.0171 | 0.0167 | 0.9898 | 0.8356 | No |
+| 10 | 0.0168 | 0.0169 | 0.9898 | 0.8356 | No |
 
-## Configuration
+## Configuration Snapshot
 
 - **Architecture:** SimpleCalculusModel (standard nn.Transformer encoder-decoder)
 - **Learning Rate:** 0.0001
+- **Warmup Steps:** 1000
 - **Batch Size:** 32
 - **Hidden Dim:** 256
 - **Max Steps/Epoch:** 3500
-- **Early Stopping:** patience=8, min_delta=0.0005
-- **Vocab Size:** 106
+- **Early Stopping:** patience=12, min_delta=0.0002
+- **Vocab Size:** 124
 - **Gradient Clipping:** max_norm=1.0
-- **Rule prediction:** folded into output sequence as leading RULE:xxx token (see docs/KNOWN_ISSUES.md)
+- **Rule Prediction:** Folded into output sequence as leading RULE:xxx token

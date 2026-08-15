@@ -102,7 +102,10 @@ def serialize_slang_math(node: Any) -> List[str]:
         # to keep parse_op_node's fixed decorator order unambiguous. Only
         # tangent_line sets this field; all other op-nodes are unaffected.
         if "point" in n:
-            point_val = float(n["point"])
+            point_raw = n["point"]
+            if isinstance(point_raw, dict):
+                point_raw = point_raw.get(n.get("var"), next(iter(point_raw.values())))
+            point_val = float(point_raw)
             if point_val.is_integer():
                 point_val = int(point_val)
             tokens.append(f"{POINT_PREFIX}{point_val}")

@@ -291,12 +291,21 @@ def generate_tangent_line_diff(var="x"):
         ans_terms.append({"coeff": int(intercept)})
         ans = {"numi": {"terms": ans_terms}, "deno": 1}
 
-        return src, ans, x0, 0  # rule_id 0 = power_rule
+        # ADDED HERE (1): Wrap expression and point into the tangent_line operation
+        src_op = {"op": "tangent_line", "var": var, "expr": src, "point": {var: x0}}
+
+        return src_op, ans, x0, 0  # rule_id 0 = power_rule
 
     # Fallback: f(x)=x^2 at x0=1 -> tangent line y = 2x - 1
+    fallback_src = {"numi": {"terms": [{"coeff": 1, "var": {var: 2}}]}, "deno": 1}
+    fallback_ans = {"numi": {"terms": [{"coeff": 2, "var": {var: 1}}, {"coeff": -1}]}, "deno": 1}
+    
+    # ADDED HERE (2): Wrap fallback src as well so output structure remains consistent
+    fallback_src_op = {"op": "tangent_line", "var": var, "expr": fallback_src, "point": {var: 1}}
+
     return (
-        {"numi": {"terms": [{"coeff": 1, "var": {var: 2}}]}, "deno": 1},
-        {"numi": {"terms": [{"coeff": 2, "var": {var: 1}}, {"coeff": -1}]}, "deno": 1},
+        fallback_src_op,
+        fallback_ans,
         1,
         0,
     )
@@ -458,8 +467,10 @@ def generate_slang_dataset():
             "verification_state": 1,
         })
 
-    # 12. Gradient (10k)
-    for _ in range(10000):
+    # 12. Gradient (30k, increased from 10k — model was not learning the
+    # NODE:GRADIENT output structure at 10k rows / ~6% of dataset)
+    # 12. Gradient (30k rows)
+    for _ in range(30000):
         expr, ans, rule_id = generate_gradient_diff()
         src_op = {"op": "gradient", "var": "x", "expr": expr}
         dataset.append({
@@ -468,21 +479,21 @@ def generate_slang_dataset():
             "tgt_output_tokens": ans,
             "rule_ids": rule_id,
             "verification_state": 1,
-        })
+    })
 
+    # 13. Tangent line (10k)
     # 13. Tangent line (10k)
     for _ in range(10000):
         var = random.choice(VARIABLES[:1])
-        src, ans, x0, rule_id = generate_tangent_line_diff(var)
-        src_op = {"op": "tangent_line", "var": var, "expr": src, "point": x0}
+    # generate_tangent_line_diff returns (src_op, ans, x0, rule_id)
+        src_op, ans, _, rule_id = generate_tangent_line_diff(var)
         dataset.append({
-            "src_tokens": src_op,
+            "src_tokens": src_op,  # Use src_op directly!
             "tgt_input_tokens": ans,
             "tgt_output_tokens": ans,
             "rule_ids": rule_id,
             "verification_state": 1,
-        })
-
+    })
     random.shuffle(dataset)
 
     with open("data/slang_dataset.jsonl", "w", encoding="utf-8") as f:

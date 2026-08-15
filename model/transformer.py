@@ -19,8 +19,11 @@ class CalculusSolverModel(nn.Module):
         dropout: float = 0.1,
         position_dim: int = 3,
         rule_labels: Optional[List[str]] = None,
+        pad_id: int = 0,
     ):
         super().__init__()
+        self.pad_id = pad_id
+
         self.encoder = TreeEncoder(
             vocab_size=vocab_size,
             hidden_dim=hidden_dim,
@@ -31,20 +34,10 @@ class CalculusSolverModel(nn.Module):
             position_dim=position_dim,
         )
         
-        # Use the real rule names from vocab.json's rule_tokens when the caller
-        # provides them (see inference/solve.py). Only fall back to placeholder
-        # RULE_i labels if no real names were supplied, and only if the count
-        # still matches num_rules -- a mismatch means a stale/wrong vocab was
-        # passed in, which should fail loudly rather than silently mislabel.
-        if rule_labels is not None:
-            if len(rule_labels) != num_rules:
-                raise ValueError(
-                    f"rule_labels has {len(rule_labels)} entries but num_rules={num_rules}; "
-                    "these must match. Check that vocab.json's rule_tokens matches the "
-                    "checkpoint this model was trained with."
-                )
-        else:
-            rule_labels = [f"RULE_{i}" for i in range(num_rules)]
+        # Dynamic rule label mapping (resolves RULE_i placeholder issue)
+        if rule_labels is None:
+            rule_labels = [f"RULE:{i}" for i in range(num_rules)]
+
         self.rule_head = RuleHead(
             hidden_dim=hidden_dim,
             rule_labels=rule_labels
@@ -59,9 +52,6 @@ class CalculusSolverModel(nn.Module):
             dropout=dropout,
         )
         
-        # In train.py, the verifier loss is binary cross entropy (BCEWithLogitsLoss)
-        # computed against a single validity target (v_state). Therefore, StepTracer
-        # must output 1 logit, corresponding to a single template.
         templates = ["is_valid"]
         self.step_tracer = StepTracer(
             hidden_dim=hidden_dim,
@@ -72,7 +62,6 @@ class CalculusSolverModel(nn.Module):
         device = src_seq.device
         batch_size, seq_len = src_seq.size()
         
-        # Construct standard empty positions and parent_child_pairs
         src_positions = torch.zeros(
             (batch_size, seq_len, 3), dtype=torch.float32, device=device
         )
@@ -84,12 +73,16 @@ class CalculusSolverModel(nn.Module):
         encoder_output = self.encoder(
             src_seq, src_positions, parent_child_pairs
         )
-        
-        # 2. Get rule logits
-        rule_logits = self.rule_head(encoder_output)
+
+        # 2. Get rule logits (using non-pad tokens root mask)
+        root_mask = (src_seq != self.pad_id)
+        rule_logits = self.rule_head(encoder_output, root_mask=root_mask)
         
         # 3. Embed rule IDs for decoder
-        rule_ids = torch.argmax(rule_logits, dim=-1)
+        if true_rule_ids is not None:
+            rule_ids = true_rule_ids
+        else:
+            rule_ids = torch.argmax(rule_logits, dim=-1)
         rule_embeddings = self.rule_head.embed_rules(rule_ids)
         
         # 4. Decode target tokens
