@@ -138,18 +138,18 @@ class CalculusSolverInference:
 
         padded_tokens = token_ids + [self.pad_id] * (self.max_len - len(token_ids))
         src_tokens = torch.tensor([padded_tokens], dtype=torch.long, device=self.device)
-        src_positions = torch.zeros(
-            (1, self.max_len, 3), dtype=torch.float32, device=self.device
-        )
-        parent_child_pairs = torch.zeros(
-            (1, self.max_len, self.max_len), dtype=torch.float32, device=self.device
-        )
 
+        # FIX: this environment's inference/beam_search.py has the
+        # simplified signature (model, src_tokens, vocab_map, beam_size,
+        # max_len, node_pool) -- it does not accept src_positions or
+        # parent_child_pairs as external arguments. model/transformer.py's
+        # CalculusSolverModel.forward() builds these zero-tensors
+        # internally, so they were never needed here; passing them caused
+        # "beam_search() got an unexpected keyword argument 'src_positions'"
+        # on every single solve() call.
         result = beam_search(
             model=self.model,
             src_tokens=src_tokens,
-            src_positions=src_positions,
-            parent_child_pairs=parent_child_pairs,
             vocab_map=self.vocab_map,
             beam_size=self.beam_size,
             max_len=self.max_len,

@@ -58,7 +58,7 @@ class CalculusSolverModel(nn.Module):
             templates=templates
         )
 
-    def forward(self, src_seq, tgt_in_seq):
+    def forward(self, src_seq, tgt_in_seq, true_rule_ids=None):
         device = src_seq.device
         batch_size, seq_len = src_seq.size()
         
