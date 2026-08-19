@@ -19,6 +19,8 @@ def beam_search(
     beam_size: int = 5,
     max_len: int = 32,
     node_pool: Optional[NodeValidityPool] = None,
+    src_positions: Optional[torch.Tensor] = None,
+    parent_child_pairs: Optional[torch.Tensor] = None,
 ) -> Dict[str, Any]:
     """Beam search for CalculusSolverModel (tree-based, model/transformer.py).
 
@@ -28,6 +30,17 @@ def beam_search(
     3-tuple directly (logits[0, -1, :]), which raised "tuple indices must
     be integers or slices, not tuple" on every single call, regardless of
     model quality. Fixed by unpacking model_output[0] before indexing.
+    """
+    """Beam search for the tree-based CalculusSolverModel (model/transformer.py).
+
+    NOTE: CalculusSolverModel.forward(src_seq, tgt_in_seq, true_rule_ids=None)
+    computes src_positions/parent_child_pairs internally (as zero tensors) and
+    does not take them as inputs. src_positions/parent_child_pairs are accepted
+    here only so callers built for the older tree-kwarg interface (e.g.
+    inference/solve.py) don't break -- they are unused.
+
+    forward() returns (decoder_logits, rule_logits, verifier_logits); only
+    decoder_logits is used for next-token scoring here.
     """
     device = src_tokens.device
     vocab = vocab_map["token_to_id"]
@@ -67,6 +80,8 @@ def beam_search(
             # won't silently reintroduce this same crash.
             model_output = model(src_tokens, tgt)
             decoder_logits = model_output[0] if isinstance(model_output, tuple) else model_output
+            next_logits = decoder_logits[0, -1, :]
+            decoder_logits, _rule_logits, _verifier_logits = model(src_tokens, tgt)
             next_logits = decoder_logits[0, -1, :]
 
             mask = node_pool.mask(validity_tokens, all_candidate_tokens)
