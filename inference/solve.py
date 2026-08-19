@@ -174,6 +174,19 @@ class CalculusSolverInference:
         if output_token_strings and output_token_strings[0] == "[BOS]":
             output_token_strings = output_token_strings[1:]
 
+        # FIX: this model folds rule prediction into the output sequence as
+        # a leading RULE:xxx token (see docs/KNOWN_ISSUES.md, "Rule
+        # prediction folded into output sequence"). It is not part of the
+        # SLaNg AST grammar the verifier deserializes. Without this strip,
+        # deserialization failed with "Unexpected token while parsing node
+        # at index 0: RULE:partial_derivative" (or any other rule label)
+        # on every single call, regardless of whether the rest of the
+        # generated sequence was correct.
+        predicted_rule = None
+        if output_token_strings and output_token_strings[0].startswith("RULE:"):
+            predicted_rule = output_token_strings[0]
+            output_token_strings = output_token_strings[1:]
+
         verifier_result = self._verify_output(input_env, output_token_strings)
         if verifier_result.get("status") in ("solved", "unverified", "unsolvable"):
             result["status"] = verifier_result["status"]
@@ -189,7 +202,7 @@ class CalculusSolverInference:
             "status": result["status"],
             "verified": result["verified"],
             "confidence": result["confidence"],
-            "rule": result.get("root_rule_label"),
+            "rule": predicted_rule,
             "output": result["output"],
             "warning": result.get("warning"),
         }
