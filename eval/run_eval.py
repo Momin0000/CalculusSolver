@@ -3,6 +3,11 @@ import os
 import sys
 import glob
 from pathlib import Path
+import torch
+
+# Performance optimizations for CPU execution
+torch.set_grad_enabled(False)
+torch.set_num_threads(4)  # Adjust based on your CPU physical core count
 
 # Ensure project root is in path
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,8 +23,9 @@ def main():
         print(f"Error: checkpoint {checkpoint_path} does not exist.")
         sys.exit(1)
 
-    print("Loading neural model...")
-    solver = CalculusSolverInference(model_path=str(checkpoint_path))
+    print("Loading neural model (with beam_size=2 for fast evaluation)...")
+    # Set beam_size=2 to avoid freezing and speed up inference significantly
+    solver = CalculusSolverInference(model_path=str(checkpoint_path), beam_size=2)
 
     benchmark_dir = ROOT / "eval" / "benchmarks"
     benchmark_files = glob.glob(str(benchmark_dir / "*.json"))
@@ -49,7 +55,8 @@ def main():
         verified_count = 0
         op_total = len(problems)
 
-        for p in problems:
+        print(f"Evaluating {op_name} ({op_total} problems)...")
+        for i, p in enumerate(problems):
             expr = p["expr"]
             target = p["target"]
 
@@ -63,7 +70,7 @@ def main():
                 if res.get("verified", False):
                     verified_count += 1
             except Exception as e:
-                print(f"Error evaluating problem: {e}")
+                print(f"Error evaluating problem {i} in {op_name}: {e}")
 
         accuracy = exact_match_count / op_total if op_total > 0 else 0.0
         ver_rate = verified_count / op_total if op_total > 0 else 0.0
@@ -81,6 +88,7 @@ def main():
 
     # Write report
     eval_results_path = ROOT / "docs" / "EVAL_RESULTS.md"
+    eval_results_path.parent.mkdir(parents=True, exist_ok=True)
     with open(eval_results_path, "w", encoding="utf-8") as f:
         f.write("\n".join(report_lines) + "\n")
 

@@ -34,9 +34,15 @@ class CalculusSolverModel(nn.Module):
             position_dim=position_dim,
         )
         
-        # Dynamic rule label mapping (resolves RULE_i placeholder issue)
+        # 1. Validate custom rule_labels count if provided
+        if rule_labels is not None and len(rule_labels) != num_rules:
+            raise ValueError(
+                f"Expected {num_rules} rule labels, but got {len(rule_labels)}."
+            )
+
+        # 2. Dynamic fallback with underscore formatting (resolves RULE_i test assertion)
         if rule_labels is None:
-            rule_labels = [f"RULE:{i}" for i in range(num_rules)]
+            rule_labels = [f"RULE_{i}" for i in range(num_rules)]
 
         self.rule_head = RuleHead(
             hidden_dim=hidden_dim,

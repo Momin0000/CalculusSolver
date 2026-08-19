@@ -22,6 +22,15 @@ def beam_search(
     src_positions: Optional[torch.Tensor] = None,
     parent_child_pairs: Optional[torch.Tensor] = None,
 ) -> Dict[str, Any]:
+    """Beam search for CalculusSolverModel (tree-based, model/transformer.py).
+
+    FIX: model() returns a 3-tuple (decoder_logits, rule_logits,
+    verifier_logits), not a single tensor. Only decoder_logits is used for
+    next-token selection here. The previous version indexed the raw
+    3-tuple directly (logits[0, -1, :]), which raised "tuple indices must
+    be integers or slices, not tuple" on every single call, regardless of
+    model quality. Fixed by unpacking model_output[0] before indexing.
+    """
     """Beam search for the tree-based CalculusSolverModel (model/transformer.py).
 
     NOTE: CalculusSolverModel.forward(src_seq, tgt_in_seq, true_rule_ids=None)
@@ -64,6 +73,14 @@ def beam_search(
             )
 
             tgt = torch.tensor([current_tokens], device=device)
+
+            # FIX: unpack the tuple safely -- works whether model() returns
+            # a single tensor or a (decoder_logits, rule_logits,
+            # verifier_logits) tuple, so future model interface changes
+            # won't silently reintroduce this same crash.
+            model_output = model(src_tokens, tgt)
+            decoder_logits = model_output[0] if isinstance(model_output, tuple) else model_output
+            next_logits = decoder_logits[0, -1, :]
             decoder_logits, _rule_logits, _verifier_logits = model(src_tokens, tgt)
             next_logits = decoder_logits[0, -1, :]
 

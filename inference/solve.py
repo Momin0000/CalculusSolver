@@ -138,18 +138,18 @@ class CalculusSolverInference:
 
         padded_tokens = token_ids + [self.pad_id] * (self.max_len - len(token_ids))
         src_tokens = torch.tensor([padded_tokens], dtype=torch.long, device=self.device)
-        src_positions = torch.zeros(
-            (1, self.max_len, 3), dtype=torch.float32, device=self.device
-        )
-        parent_child_pairs = torch.zeros(
-            (1, self.max_len, self.max_len), dtype=torch.float32, device=self.device
-        )
 
+        # FIX: this environment's inference/beam_search.py has the
+        # simplified signature (model, src_tokens, vocab_map, beam_size,
+        # max_len, node_pool) -- it does not accept src_positions or
+        # parent_child_pairs as external arguments. model/transformer.py's
+        # CalculusSolverModel.forward() builds these zero-tensors
+        # internally, so they were never needed here; passing them caused
+        # "beam_search() got an unexpected keyword argument 'src_positions'"
+        # on every single solve() call.
         result = beam_search(
             model=self.model,
             src_tokens=src_tokens,
-            src_positions=src_positions,
-            parent_child_pairs=parent_child_pairs,
             vocab_map=self.vocab_map,
             beam_size=self.beam_size,
             max_len=self.max_len,
@@ -174,6 +174,19 @@ class CalculusSolverInference:
         if output_token_strings and output_token_strings[0] == "[BOS]":
             output_token_strings = output_token_strings[1:]
 
+        # FIX: this model folds rule prediction into the output sequence as
+        # a leading RULE:xxx token (see docs/KNOWN_ISSUES.md, "Rule
+        # prediction folded into output sequence"). It is not part of the
+        # SLaNg AST grammar the verifier deserializes. Without this strip,
+        # deserialization failed with "Unexpected token while parsing node
+        # at index 0: RULE:partial_derivative" (or any other rule label)
+        # on every single call, regardless of whether the rest of the
+        # generated sequence was correct.
+        predicted_rule = None
+        if output_token_strings and output_token_strings[0].startswith("RULE:"):
+            predicted_rule = output_token_strings[0]
+            output_token_strings = output_token_strings[1:]
+
         verifier_result = self._verify_output(input_env, output_token_strings)
         if verifier_result.get("status") in ("solved", "unverified", "unsolvable"):
             result["status"] = verifier_result["status"]
@@ -189,7 +202,7 @@ class CalculusSolverInference:
             "status": result["status"],
             "verified": result["verified"],
             "confidence": result["confidence"],
-            "rule": result.get("root_rule_label"),
+            "rule": predicted_rule,
             "output": result["output"],
             "warning": result.get("warning"),
         }

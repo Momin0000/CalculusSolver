@@ -38,3 +38,7 @@ logs/
 
 # Model Checkpoints (avoid committing large binary weights)
 checkpoints/
+
+*.pt
+
+*.pt
