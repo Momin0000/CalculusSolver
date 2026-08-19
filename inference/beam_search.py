@@ -19,9 +19,20 @@ def beam_search(
     beam_size: int = 5,
     max_len: int = 32,
     node_pool: Optional[NodeValidityPool] = None,
+    src_positions: Optional[torch.Tensor] = None,
+    parent_child_pairs: Optional[torch.Tensor] = None,
 ) -> Dict[str, Any]:
-    """Simplified beam search for SimpleCalculusModel -- one model call
-    per step (src_seq, tgt_in_seq), no rule_embeddings, no tree kwargs."""
+    """Beam search for the tree-based CalculusSolverModel (model/transformer.py).
+
+    NOTE: CalculusSolverModel.forward(src_seq, tgt_in_seq, true_rule_ids=None)
+    computes src_positions/parent_child_pairs internally (as zero tensors) and
+    does not take them as inputs. src_positions/parent_child_pairs are accepted
+    here only so callers built for the older tree-kwarg interface (e.g.
+    inference/solve.py) don't break -- they are unused.
+
+    forward() returns (decoder_logits, rule_logits, verifier_logits); only
+    decoder_logits is used for next-token scoring here.
+    """
     device = src_tokens.device
     vocab = vocab_map["token_to_id"]
     id_to_token = vocab_map["id_to_token"]
@@ -53,8 +64,8 @@ def beam_search(
             )
 
             tgt = torch.tensor([current_tokens], device=device)
-            logits = model(src_tokens, tgt)
-            next_logits = logits[0, -1, :]
+            decoder_logits, _rule_logits, _verifier_logits = model(src_tokens, tgt)
+            next_logits = decoder_logits[0, -1, :]
 
             mask = node_pool.mask(validity_tokens, all_candidate_tokens)
             invalid_mask = torch.tensor([not v for v in mask], device=device)
